@@ -429,6 +429,24 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   val t_replay :: t_probe :: t_wb :: t_mshr_meta_read :: t_lsu :: t_prefetch :: Nil = Enum(6)
 
+  // cflush
+  val cflush_invalid :: cflush_hit :: cflush_miss :: Nil = Enum(3) // possible cflush states
+  val cflush_lsu_release = Wire(Decoupled(new TLBundleC(edge.bundle))) // TLC for flushing cacheline
+  cflush_lsu_release.bits := DontCare
+  cflush_lsu_release.valid := false.B
+
+  // cflush counter
+  val cflush_counter = RegInit(0.S(4.W))
+  val flush_sel = Wire(Vec(2, Bool()))
+  flush_sel(0) := tl_out.d.bits.opcode === TLMessages.SuperReleaseAck && tl_out.d.fire
+  flush_sel(1) := cflush_lsu_release.fire
+  cflush_counter := cflush_counter + MuxLookup(flush_sel.asUInt, 0.S, Array(1.U -> -1.S, 2.U -> 1.S))
+  dontTouch(cflush_counter) //prevent optimizing out flush_counter for debugging
+  dontTouch(flush_sel)
+  // do we have any pending flushes?
+  io.lsu.dcache_flushing := cflush_counter =/= 0.S
+  dontTouch(io.lsu.dcache_flushing)
+
   val wb = Module(new BoomWritebackUnit)
   val prober = Module(new BoomProbeUnit)
   val mshrs = Module(new BoomMSHRFile(nBanks))
@@ -599,11 +617,14 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
                  Mux(prefetch_fire            , t_prefetch,
                  Mux(mshrs.io.meta_read.fire, t_mshr_meta_read
                                               , t_replay)))))
-
   // Does this request need to send a response or nack
   val s0_send_resp_or_nack = Mux(io.lsu.req.fire, s0_valid,
     VecInit(Mux(mshrs.io.replay.fire && isRead(mshrs.io.replay.bits.uop.mem_cmd), 1.U(memWidth.W), 0.U(memWidth.W)).asBools))
-
+  
+  dontTouch(s0_valid)
+  dontTouch(s0_req)
+  dontTouch(s0_type)
+  dontTouch(s0_send_resp_or_nack)
 
   val s1_req          = RegNext(s0_req)
   for (w <- 0 until memWidth)
@@ -648,6 +669,15 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   for (w <- 0 until memWidth)
     s2_req(w).uop.br_mask := GetNewBrMask(io.lsu.brupdate, s1_req(w).uop)
 
+  dontTouch(s1_valid)
+  dontTouch(s1_req)
+  dontTouch(s1_type)
+  dontTouch(s1_tag_match_way)
+  dontTouch(s1_tag_eq_way)
+  dontTouch(s2_valid)
+  dontTouch(s2_req)
+  dontTouch(s2_type)
+
   val s2_tag_match_way = RegNext(s1_tag_match_way)
   val s2_tag_match     = s2_tag_match_way.map(_.orR)
   val s2_hit_state     = widthMap(i => Mux1H(s2_tag_match_way(i), wayMap((w: Int) => RegNext(meta(i).io.resp(w).coh))))
@@ -661,6 +691,23 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   val s2_wb_idx_matches = RegNext(s1_wb_idx_matches)
 
+  // cflush
+  val cflush_state = Mux(s2_req(0).uop.mem_cmd === M_FLUSH_ALL, Mux(s2_hit(0), cflush_hit, cflush_miss), cflush_invalid) // current cflush state
+  
+  when (cflush_state.isOneOf(cflush_hit, cflush_miss)) {
+    when(cflush_state === cflush_miss) {
+      cflush_lsu_release.bits := edge.SuperRelease(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes.U)._2
+      cflush_lsu_release.valid := true.B
+    }
+  }
+
+  dontTouch(cflush_state)
+  dontTouch(cflush_lsu_release)
+
+  dontTouch(s2_tag_match_way)
+  dontTouch(s2_hit)
+  dontTouch(s2_hit_state)
+  dontTouch(s2_new_hit_state)
   // lr/sc
   val debug_sc_fail_addr = RegInit(0.U)
   val debug_sc_fail_cnt  = RegInit(0.U(8.W))
@@ -819,10 +866,11 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   mshrs.io.wb_resp      := wb.io.resp
   wb.io.mem_grant       := tl_out.d.fire && tl_out.d.bits.source === cfg.nMSHRs.U
 
-  val lsu_release_arb = Module(new Arbiter(new TLBundleC(edge.bundle), 2))
+  val lsu_release_arb = Module(new Arbiter(new TLBundleC(edge.bundle), 3))
   io.lsu.release <> lsu_release_arb.io.out
   lsu_release_arb.io.in(0) <> wb.io.lsu_release
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
+  lsu_release_arb.io.in(2) <> cflush_lsu_release
 
   TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
 

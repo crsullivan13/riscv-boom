@@ -88,6 +88,9 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   // In our response stage, if we get a nack, we need to reexecute
   val nack        = Flipped(Vec(memWidth, new ValidIO(new BoomDCacheReq)))
 
+  // Does the dcache have any unacknowledged flushes?
+  val dcache_flushing   = Input(Bool())
+
   val brupdate       = Output(new BrUpdateInfo)
   val exception    = Output(Bool())
   val rob_pnr_idx  = Output(UInt(robAddrSz.W))
@@ -444,7 +447,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                               && exe_req(w).bits.uop.ctrl.is_std)
 
   // Can we fire an incoming store addrgen
-  val can_fire_sta_incoming  = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_sta
+  val can_fire_sta_incoming  = widthMap(w => exe_req(w).valid && (exe_req(w).bits.uop.ctrl.is_sta || exe_req(w).bits.uop.is_flush)
                                                               && !exe_req(w).bits.uop.ctrl.is_std)
 
   // Can we fire an incoming store datagen
@@ -947,7 +950,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       clr_bsy_brmask  (w) := GetNewBrMask(io.core.brupdate, mem_stq_incoming_e(w).bits.uop)
     } .elsewhen (fired_sta_incoming(w)) {
       clr_bsy_valid   (w) := mem_stq_incoming_e(w).valid            &&
-                             mem_stq_incoming_e(w).bits.data.valid  &&
+                             (mem_stq_incoming_e(w).bits.data.valid || mem_stq_incoming_e(w).bits.uop.is_flush)  &&
                             !mem_tlb_miss(w)                        &&
                             !mem_stq_incoming_e(w).bits.uop.is_amo  &&
                             !IsKilledByBranch(io.core.brupdate, mem_stq_incoming_e(w).bits.uop)
