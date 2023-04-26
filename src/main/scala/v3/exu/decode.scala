@@ -248,7 +248,7 @@ object XDecode extends DecodeConstants
   FENCE   -> List(Y, N, X, uopFENCE, IQT_INT, FU_MEM , RT_X  , RT_X  , RT_X  , N, IS_X, N, Y, N, Y, N, M_X  , 0.U, N, N, N, Y, Y, CSR.N), // TODO PERF make fence higher performance
                                                                                                                                                        // currently serializes pipeline
 
-  CFLUSH  -> List(Y, N, X, uopCFLSH,IQT_MEM, FU_MEM , RT_X  , RT_FIX  , RT_X  , N, IS_X, N, Y, N, N, N, M_FLUSH_ALL, 0.U, N, N, N, N, N, CSR.N),
+  CFLUSH  -> List(Y, N, X, uopCFLSH,IQT_MEM, FU_MEM , RT_X  , RT_FIX  , RT_X  , N, IS_X, N, Y, N, N, N, M_FLUSH, 0.U, N, N, N, N, N, CSR.N),
            //                                                                  frs3_en                           wakeup_delay
            //     is val inst?                                                 |  imm sel                        |   bypassable (aka, known/fixed latency)
            //     |  is fp inst?                                               |  |     uses_ldq                 |   |  is_br

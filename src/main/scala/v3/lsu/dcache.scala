@@ -446,6 +446,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   // do we have any pending flushes?
   io.lsu.dcache_flushing := cflush_counter =/= 0.S
   dontTouch(io.lsu.dcache_flushing)
+  dontTouch(tl_out)
 
   val wb = Module(new BoomWritebackUnit)
   val prober = Module(new BoomProbeUnit)
@@ -691,19 +692,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   val s2_wb_idx_matches = RegNext(s1_wb_idx_matches)
 
-  // cflush
-  val cflush_state = Mux(s2_req(0).uop.mem_cmd === M_FLUSH_ALL, Mux(s2_hit(0), cflush_hit, cflush_miss), cflush_invalid) // current cflush state
-  
-  when (cflush_state.isOneOf(cflush_hit, cflush_miss)) {
-    when(cflush_state === cflush_miss) {
-      cflush_lsu_release.bits := edge.SuperRelease(fromSource = 0.U, toAddress = 0.U, lgSize = lgCacheBlockBytes.U)._2
-      cflush_lsu_release.valid := true.B
-    }
-  }
-
-  dontTouch(cflush_state)
-  dontTouch(cflush_lsu_release)
-
   dontTouch(s2_tag_match_way)
   dontTouch(s2_hit)
   dontTouch(s2_hit_state)
@@ -796,6 +784,16 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   // If MSHR is available and this is only a store(not a amo), we don't need to wait for resp later
   s2_store_failed := s2_valid(0) && s2_nack(0) && s2_send_nack(0) && s2_req(0).uop.uses_stq
 
+  // can we flush already or must we queue into the MSHR?
+  val s2_flush_safe = isFlush(s2_req(0).uop.mem_cmd) && (s2_hit(0) || !mshrs.io.block_hit(0))  
+  
+  // cflush
+  cflush_lsu_release.valid := s2_flush_safe
+  cflush_lsu_release.bits := edge.SuperRelease(cfg.nMSHRs.U, s2_req(0).addr, lgCacheBlockBytes.U, s2_data_muxed(0))._2
+  dontTouch(cflush_lsu_release)
+
+  // todo metadata updates
+
   // Miss handling
   for (w <- 0 until memWidth) {
     mshrs.io.req(w).valid := s2_valid(w)          &&
@@ -866,13 +864,13 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   mshrs.io.wb_resp      := wb.io.resp
   wb.io.mem_grant       := tl_out.d.fire && tl_out.d.bits.source === cfg.nMSHRs.U
 
-  val lsu_release_arb = Module(new Arbiter(new TLBundleC(edge.bundle), 3))
+  val lsu_release_arb = Module(new Arbiter(new TLBundleC(edge.bundle), 2))
   io.lsu.release <> lsu_release_arb.io.out
   lsu_release_arb.io.in(0) <> wb.io.lsu_release
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
-  lsu_release_arb.io.in(2) <> cflush_lsu_release
+  //lsu_release_arb.io.in(2) <> cflush_lsu_release
 
-  TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
+  TLArbiter.lowest(edge, tl_out.c, wb.io.release, cflush_lsu_release, prober.io.rep)
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
