@@ -94,10 +94,7 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
 
     val probe_rdy   = Output(Bool())
 
-<<<<<<< HEAD:src/main/scala/v3/lsu/mshrs.scala
     val reg = Flipped(new BRUTileIO(nBanks))
-=======
->>>>>>> bf989788 (add initial implementation of flush. modify dcache and mshr. todo metadata write and mshr state handling):src/main/scala/lsu/mshrs.scala
   })
 
   // TODO: Optimize this. We don't want to mess with cache during speculation
@@ -386,7 +383,8 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
       new_coh := coh_on_hit
     }
     when (rpq.io.empty && !rpq.io.enq.valid) {
-      state := s_meta_write_req
+      state := Mux(flush_queued, s_mem_finish_1, s_meta_write_req)
+      finish_to_prefetch := finish_to_prefetch | flush_queued
     }
   } .elsewhen (state === s_meta_write_req) {
     io.meta_write.valid         := true.B
@@ -783,7 +781,7 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
     mshr
   }
 
-  mmio_alloc_arb.io.out.ready := req.valid && !cacheable
+  mmio_alloc_arb.io.out.ready := req.valid && !cacheable && !isFlush(req.bits.uop.mem_cmd)
 
   val nBankBits = log2Ceil(nBanks)
   val cacheLineBits = 6
