@@ -267,7 +267,7 @@ class FlushReq(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
 
 class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCacheModule()(p) {
   val io = IO(new Bundle {
-    val id = Input(UInt((2*cfg.nMSHRs).W))
+    val id = Input(UInt((2*cfg.nMSHRs + 1).W))
 
     val req = Flipped(Decoupled(new FlushReq))
     val super_release_ack = Input(Bool())
@@ -331,7 +331,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
       io.handling_tag := req_tag
     }
   } .elsewhen (state === s_super_release) {
-    when(io.rep.ready) {
+    when (io.rep.ready) {
       io.flush_inc_valid := true.B
       state := Mux(req.invalidate, s_meta_write, s_invalid) // do we need to invalidate this block?
     }
@@ -339,11 +339,11 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.meta_write.ready) {
       state := s_super_release_ack
     }
+  }
     .elsewhen (state === s_super_release_ack) {
-    when(io.super_release_ack) {
+    when (io.super_release_ack) {
       io.flush_inc_valid := true.B
       state := s_invalid
-    }
     }
   }
 
@@ -355,13 +355,10 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val req = Flipped(Decoupled(new FlushReq))
 
     val rep = Decoupled(new TLBundleC(edge.bundle))
-    val flush_count = Output(SInt((log2Ceil(cfg.nMSHRs+1).W)))
+    val flushing = Output(Bool())
 
     val meta_write = Decoupled(new L1MetaWriteReq)
-    val super_release_ack = Input(new Bundle {
-      val valid = Bool()
-      val idx = UInt((2*cfg.nMSHRs).W)
-    })
+    val super_release_ack = Flipped(Decoupled(new TLBundleD(edge.bundle)))
 
     val probe_rdy = Output(Bool())
     val nack = Output(Bool())
@@ -369,13 +366,17 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   val meta_write_arb = Module(new Arbiter(new L1MetaWriteReq, cfg.nMSHRs))
   val mshr_alloc_idx = Wire(UInt())
-  val flush_counter = RegInit(0.S(log2Ceil(cfg.nMSHRs+1).W))
+  val flush_counter = RegInit(0.U(log2Ceil(cfg.nMSHRs+1).W))
+  val update_counter = WireInit(0.U(log2Ceil(cfg.nMSHRs+1).W))
 
   io.req := DontCare 
+
+  io.super_release_ack.ready := false.B
   
   val mshrs = (0 until cfg.nMSHRs) map { i =>
-    val mshr = Module(new BoomFlushMSHR) 
-    mshr.io.id := (cfg.nMSHRs + i).U(log2Ceil(2*cfg.nMSHRs).W)
+    val mshr = Module(new BoomFlushMSHR)
+    val id =  (cfg.nMSHRs + 1 + i).U
+    mshr.io.id := id
     
     meta_write_arb.io.in(i) <> mshr.io.meta_write
 
@@ -383,7 +384,12 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     mshr.io.req.valid := (i.U === mshr_alloc_idx) && io.req.valid
 
     mshr.io.super_release_ack := io.super_release_ack.valid && 
-                                (io.super_release_ack.idx === (i + cfg.nMSHRs).U)      // are we the recipient?
+                                (io.super_release_ack.bits.source === id)      // are we the recipient?
+
+    when (io.super_release_ack.bits.source === id) {
+      io.super_release_ack.ready := true.B
+    } 
+
     mshr 
   }
 
@@ -397,17 +403,22 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   io.nack := mshrs.map(m=>(!m.io.req.ready && (m.io.handling_tag === (io.req.bits.addr >> untagBits)))).reduce(_||_)
 
-  io.flush_count := flush_counter
+  io.flushing := flush_counter =/= 0.U
 
   // Try to round-robin the MSHRs
   val mshr_head      = RegInit(0.U(log2Ceil(cfg.nMSHRs).W))
   mshr_alloc_idx    := RegNext(AgePriorityEncoder(mshrs.map(m=>m.io.req.ready), mshr_head))
   when (io.req.ready && io.req.valid) { mshr_head := WrapInc(mshr_head, cfg.nMSHRs) }
 
+  val add = mshrs.map(m=> (m.io.flush_inc_valid && !m.io.flush_inc).asUInt).reduce(_+_)
+  val subtract = mshrs.map(m=> (m.io.flush_inc_valid && m.io.flush_inc).asUInt).reduce(_+_)
   // Update flush counter
-  val update_counter = mshrs.map{m=> (m.io.flush_inc_valid && !m.io.flush_inc).asSInt}.reduce(_+_) -
-                       mshrs.map{m=> (m.io.flush_inc_valid && m.io.flush_inc).asSInt}.reduce(_+_)
+  update_counter := add - subtract
   flush_counter := flush_counter + update_counter
+
+  dontTouch(update_counter)
+  dontTouch(add)
+  dontTouch(subtract)
 
 }
 
@@ -539,12 +550,12 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int, nBanks: Int)(implic
 
   protected def cacheClientParameters = cfg.scratch.map(x => Seq()).getOrElse(Seq(TLMasterParameters.v1(
     name          = s"Core ${staticIdForMetadataUseOnly} DCache",
-    sourceId      = IdRange(0, 1 max (cfg.nMSHRs + 1)),
+    sourceId      = IdRange(0, 1 max (2*cfg.nMSHRs + 1)),
     supportsProbe = TransferSizes(cfg.blockBytes, cfg.blockBytes))))
 
   protected def mmioClientParameters = Seq(TLMasterParameters.v1(
     name          = s"Core ${staticIdForMetadataUseOnly} DCache MMIO",
-    sourceId      = IdRange(cfg.nMSHRs + 1, cfg.nMSHRs + 1 + cfg.nMMIOs),
+    sourceId      = IdRange(2*cfg.nMSHRs + 1, 2*cfg.nMSHRs + 1 + cfg.nMMIOs),
     requestFifo   = true))
 
   val node = TLClientNode(Seq(TLMasterPortParameters.v1(
@@ -590,7 +601,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val flsh = Module(new BoomFlushUnit)
 
   // do we have any pending flushes?
-  io.lsu.dcache_flushing := flsh.io.flush_count =/= 0.S
+  io.lsu.dcache_flushing := flsh.io.flushing
   dontTouch(io.lsu.dcache_flushing)
   dontTouch(tl_out)
   
@@ -997,6 +1008,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   prober.io.flsh_rdy    := flsh.io.probe_rdy
   mshrs.io.prober_state := prober.io.state
 
+  val tl_outd = tl_out.d
+  val refill_state = WireInit(0.U)
+
   // refills
   when (tl_out.d.bits.source === cfg.nMSHRs.U) {
     // This should be ReleaseAck
@@ -1005,10 +1019,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
     mshrs.io.mem_grant.bits  := DontCare
 
     flsh.io.super_release_ack.valid := false.B
-    flsh.io.super_release_ack.idx := DontCare
+    flsh.io.super_release_ack.bits := DontCare
   } .elsewhen(tl_out.d.bits.opcode === TLMessages.SuperReleaseAck) {
-    flsh.io.super_release_ack.valid := tl_out.d.valid
-    flsh.io.super_release_ack.idx   := tl_out.d.bits.sink
+    flsh.io.super_release_ack <> tl_out.d
 
     mshrs.io.mem_grant.valid := false.B
     mshrs.io.mem_grant.bits := DontCare
@@ -1017,7 +1030,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
     mshrs.io.mem_grant <> tl_out.d
     // flsh doesnt have incoming super release acks
     flsh.io.super_release_ack.valid := false.B
-    flsh.io.super_release_ack.idx := DontCare
+    flsh.io.super_release_ack.bits := DontCare
   }
 
   dataWriteArb.io.in(1) <> mshrs.io.refill

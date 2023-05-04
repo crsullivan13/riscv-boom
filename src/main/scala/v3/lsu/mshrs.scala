@@ -758,7 +758,7 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
   var mmio_rdy = false.B
 
   val mmios = (0 until nIOMSHRs) map { i =>
-    val id = cfg.nMSHRs + 1 + i // +1 for wb unit
+    val id = 2*cfg.nMSHRs + 1 + i // +1 for wb unit
     val mshr = Module(new BoomIOMSHR(id))
 
     mmio_alloc_arb.io.in(i).valid := mshr.io.req.ready
