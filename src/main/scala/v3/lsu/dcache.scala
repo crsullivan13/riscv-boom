@@ -261,7 +261,6 @@ class BoomProbeUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 class FlushReq(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
   val addr = Bits(coreMaxAddrBits.W)
   val way_en = Bits(nWays.W)
-  val data = UInt()
   val invalidate = Bool()
 }
 
@@ -274,6 +273,8 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
     val rep = Decoupled(new TLBundleC(edge.bundle))
     val meta_write = Decoupled(new L1MetaWriteReq)
+    val data_req = Decoupled(new L1DataReadReq)
+    val data_resp = Input(UInt(encRowBits.W))
 
     val probe_rdy = Output(Bool())
     val handling_tag = Output(Bits(coreMaxAddrBits.W))
@@ -281,8 +282,15 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val flush_inc_valid = Output(Bool())
   })
 
-  val (s_invalid :: s_super_release :: s_meta_write :: s_super_release_ack :: Nil) = Enum(4)
+  val (s_invalid :: s_fill_buffer:: s_meta_write :: s_super_release :: s_super_release_data :: s_super_release_ack :: Nil) = Enum(6)
   val state = RegInit(s_invalid)
+  val r1_data_req_fired = RegInit(false.B)
+  val r2_data_req_fired = RegInit(false.B)
+  val r1_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
+  val r2_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
+  val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
+  val (_, last_beat, all_beats_done, beat_count) = edge.count(io.rep)
+  val wb_buffer = Reg(Vec(refillCycles, UInt(encRowBits.W)))
 
   val id = io.id
   val req = Reg(new FlushReq)
@@ -293,7 +301,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
                               fromSource = id,
                               toAddress  = req.addr,
                               lgSize = lgCacheBlockBytes.U,
-                              data = req.data
+                              data = wb_buffer(data_req_cnt)
                           )._2
 
   val super_release = edge.SuperRelease(
@@ -304,11 +312,12 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   dontTouch(super_release)
   dontTouch(super_release_data)
+  dontTouch(io.data_req)
 
   io.req.ready := state === s_invalid
   io.probe_rdy := state === s_invalid
 
-  io.rep.valid := state === s_super_release
+  io.rep.valid := (state === s_super_release) || (state === s_super_release_data && data_req_cnt < refillCycles.U)
   io.rep.bits := Mux(req.invalidate, super_release_data, super_release)
 
   io.meta_write.valid := state === s_meta_write
@@ -318,29 +327,64 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.meta_write.bits.data.tag := req_tag
   io.meta_write.bits.data.coh := ClientMetadata.onReset
 
+  io.data_req.valid  := false.B
+  io.data_req.bits   := DontCare
+
   io.flush_inc_valid := false.B
   io.flush_inc := state === s_super_release_ack
 
   io.handling_tag := DontCare
 
+  val ref_cycles = WireInit(refillCycles.U)
+  dontTouch(ref_cycles)
+
   when (state === s_invalid) {
     io.flush_inc_valid := false.B
     when (io.req.valid) {
       req := io.req.bits
-      state := s_super_release
+      state := Mux(req.invalidate, s_meta_write, s_super_release) // do we need to invalidate this block?
       io.handling_tag := req_tag
+    }
+  } .elsewhen (state === s_meta_write) {
+    when (io.meta_write.ready) {
+      state := s_fill_buffer
+    }
+  } .elsewhen (state === s_fill_buffer) {
+    io.data_req.valid := data_req_cnt < refillCycles.U
+    io.data_req.bits.way_en := req.way_en
+    io.data_req.bits.addr := (if(refillCycles > 1)
+                              Cat(req_idx, data_req_cnt(log2Up(refillCycles)-1,0))
+                            else req_idx) << rowOffBits
+
+    r1_data_req_fired := false.B
+    r1_data_req_cnt   := 0.U
+    r2_data_req_fired := r1_data_req_fired
+    r2_data_req_cnt   := r1_data_req_cnt
+    when (io.data_req.fire) {
+      r1_data_req_fired := true.B
+      r1_data_req_cnt   := data_req_cnt
+      data_req_cnt := data_req_cnt + 1.U
+    }
+    when (r2_data_req_fired) {
+      wb_buffer(r2_data_req_cnt) := io.data_resp
+      when (r2_data_req_cnt === (refillCycles-1).U) {
+        state := s_super_release_data
+        data_req_cnt := 0.U
+      }
     }
   } .elsewhen (state === s_super_release) {
     when (io.rep.ready) {
       io.flush_inc_valid := true.B
-      state := Mux(req.invalidate, s_meta_write, s_invalid) // do we need to invalidate this block?
-    }
-  } .elsewhen (state === s_meta_write) {
-    when (io.meta_write.ready) {
       state := s_super_release_ack
     }
-  }
-    .elsewhen (state === s_super_release_ack) {
+  } .elsewhen (state === s_super_release_data) {
+    when (io.rep.fire) {
+      data_req_cnt := data_req_cnt + 1.U
+    }
+    when ((data_req_cnt === (refillCycles-1).U) && io.rep.fire) {
+      state := s_super_release_ack
+    }
+  }.elsewhen (state === s_super_release_ack) {
     when (io.super_release_ack) {
       io.flush_inc_valid := true.B
       state := s_invalid
@@ -359,12 +403,15 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
     val meta_write = Decoupled(new L1MetaWriteReq)
     val super_release_ack = Flipped(Decoupled(new TLBundleD(edge.bundle)))
+    val data_req = Decoupled(new L1DataReadReq)
+    val data_resp = Input(UInt(encRowBits.W))
 
     val probe_rdy = Output(Bool())
     val nack = Output(Bool())
   })
 
-  val meta_write_arb = Module(new Arbiter(new L1MetaWriteReq, cfg.nMSHRs))
+  val metaWriteArb = Module(new Arbiter(new L1MetaWriteReq, cfg.nMSHRs))
+  val dataReadArb = Module(new Arbiter(new L1DataReadReq, cfg.nMSHRs))
   val mshr_alloc_idx = Wire(UInt())
   val flush_counter = RegInit(0.U(log2Ceil(cfg.nMSHRs+1).W))
   val update_counter = WireInit(0.U(log2Ceil(cfg.nMSHRs+1).W))
@@ -378,10 +425,12 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val id =  (cfg.nMSHRs + 1 + i).U
     mshr.io.id := id
     
-    meta_write_arb.io.in(i) <> mshr.io.meta_write
+    metaWriteArb.io.in(i) <> mshr.io.meta_write
+    dataReadArb.io.in(i) <> mshr.io.data_req
 
     mshr.io.req.bits := io.req.bits
     mshr.io.req.valid := (i.U === mshr_alloc_idx) && io.req.valid
+    mshr.io.data_resp := io.data_resp
 
     mshr.io.super_release_ack := io.super_release_ack.valid && 
                                 (io.super_release_ack.bits.source === id)      // are we the recipient?
@@ -393,7 +442,8 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     mshr 
   }
 
-  io.meta_write <> meta_write_arb.io.out
+  io.meta_write <> metaWriteArb.io.out
+  io.data_req <> dataReadArb.io.out
 
   io.probe_rdy := mshrs.map(_.io.probe_rdy).reduce(_||_)
 
@@ -641,7 +691,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val data = Module(if (boomParams.numDCacheBanks == 1) new BoomDuplicatedDataArray else new BoomBankedDataArray)
   val dataWriteArb = Module(new Arbiter(new L1DataWriteReq, 2))
   // 0 goes to pipeline, 1 goes to MSHR refills
-  val dataReadArb = Module(new Arbiter(new BoomL1DataReadReq, 3))
+  val dataReadArb = Module(new Arbiter(new BoomL1DataReadReq, 4))
   // 0 goes to MSHR replays, 1 goes to wb, 2 goes to pipeline
   dataReadArb.io.in := DontCare
 
@@ -957,7 +1007,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   flsh.io.req.valid := s2_flush_valid
   flsh.io.req.bits.addr := (s2_req(0).addr)
   flsh.io.req.bits.way_en := s2_tag_match_way(0)
-  flsh.io.req.bits.data := s2_data_muxed(0)
   flsh.io.req.bits.invalidate := s2_hit(0)
 
   // todo metadata updates
@@ -1040,6 +1089,10 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   // flush unit meta write
   metaWriteArb.io.in(2) <> flsh.io.meta_write
+  // flush unit data read
+  dataReadArb.io.in(3) <> flsh.io.data_req
+  // Doesthis work?
+  flsh.io.data_resp := s2_data_muxed(0)
 
   // writebacks
   val wbArb = Module(new Arbiter(new WritebackReq(edge.bundle), 2))
