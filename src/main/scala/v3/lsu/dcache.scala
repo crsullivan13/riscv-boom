@@ -287,15 +287,17 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val flush_inc_valid = Output(Bool())
   })
 
-  val (s_invalid :: s_meta_write :: s_fill_buffer :: s_super_release :: s_super_release_data :: s_super_release_ack :: Nil) = Enum(6)
+  val (s_invalid :: s_meta_write :: s_super_release_data :: s_super_release :: s_super_release_ack :: Nil) = Enum(5)
   val state = RegInit(s_invalid)
   val r1_data_req_fired = RegInit(false.B)
   val r2_data_req_fired = RegInit(false.B)
   val r1_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
   val r2_data_req_cnt = Reg(UInt(log2Up(refillCycles+1).W))
   val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
+  val rel_data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.rep)
   val wb_buffer = Reg(Vec(refillCycles, UInt(encRowBits.W)))
+  val wb_buffer_valids = Reg(Vec(refillCycles, Bool()))
 
   val id = io.id
   val req = Reg(new FlushReq)
@@ -305,7 +307,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
                               fromSource = id,
                               toAddress  = r_address,
                               lgSize = lgCacheBlockBytes.U,
-                              data = wb_buffer(data_req_cnt)
+                              data = wb_buffer(rel_data_req_cnt)
                           )._2
 
   val super_release = edge.SuperRelease(
@@ -320,9 +322,9 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   io.req.ready := state === s_invalid
   io.probe_rdy := state.isOneOf(s_invalid, s_super_release_ack)
-  io.filling_buffer := state.isOneOf(s_fill_buffer, s_super_release_data, s_super_release_ack)
+  io.filling_buffer := state.isOneOf(s_super_release_data, s_super_release_ack)
 
-  io.rep.valid := (state === s_super_release) || (state === s_super_release_data && data_req_cnt < refillCycles.U)
+  io.rep.valid := (state === s_super_release) || (state === s_super_release_data && wb_buffer_valids(rel_data_req_cnt) && (rel_data_req_cnt < refillCycles.U))
   io.rep.bits := Mux(req.hit && req.dirty, super_release_data, super_release)
 
   io.meta_write.valid := state === s_meta_write
@@ -347,13 +349,15 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.req.valid) {
       req := io.req.bits
       data_req_cnt := 0.U
+      rel_data_req_cnt := 0.U
+      wb_buffer_valids := VecInit(Seq.fill(refillCycles)(false.B))
       state := Mux(io.req.bits.hit, s_meta_write, s_super_release) // do we have to invalidate this block?
     }
   } .elsewhen (state === s_meta_write) {
     when (io.meta_write.fire) {
-      state := Mux(req.dirty, s_fill_buffer, s_super_release)
+      state := Mux(req.dirty, s_super_release_data, s_super_release)
     }
-  } .elsewhen (state === s_fill_buffer) {
+  } .elsewhen (state === s_super_release_data) {
     io.data_req.valid := data_req_cnt < refillCycles.U
     io.data_req.bits.way_en := req.way_en
     io.data_req.bits.addr := (if(refillCycles > 1)
@@ -371,24 +375,20 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     }
     when (r2_data_req_fired) {
       wb_buffer(r2_data_req_cnt) := Mux1H(req.way_en, io.data_resp)
-      when (r2_data_req_cnt === (refillCycles-1).U) {
-        state := s_super_release_data
-        data_req_cnt := 0.U
-      }
+      wb_buffer_valids(r2_data_req_cnt) := true.B
+    }
+    when (io.rep.fire) {
+        rel_data_req_cnt := rel_data_req_cnt + 1.U
+    }
+    when (rel_data_req_cnt === refillCycles.U) {
+      state := s_super_release_ack
     }
   } .elsewhen (state === s_super_release) {
     when (io.rep.ready) {
       io.flush_inc_valid := true.B
       state := s_super_release_ack
     }
-  } .elsewhen (state === s_super_release_data) {
-    when (io.rep.fire) {
-      data_req_cnt := data_req_cnt + 1.U
-    }
-    when ((data_req_cnt === (refillCycles-1).U) && io.rep.fire) {
-      state := s_super_release_ack
-    }
-  }.elsewhen (state === s_super_release_ack) {
+  } .elsewhen (state === s_super_release_ack) {
     when (io.super_release_ack) {
       io.flush_inc_valid := true.B
       state := s_invalid
@@ -991,7 +991,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val s2_nack_wb     = widthMap(w => s2_valid(w) && !s2_hit(w) && s2_wb_idx_matches(w))
   // Flush unit is not ready or we are waiting for an incoming ack
   val s2_nack_flsh   = widthMap(w => (w == 0).B && isFlush(s2_req(w).uop.mem_cmd) && (!flsh.io.req.ready || (flsh.io.req.valid && flsh.io.nack)))
-  // Flush unit is filling buffer for this (missed) request. Nack
+  // Flush unit is filling buffer for this (missed) request. Nack. Note this is not possible for a replay (always false)
   val s2_nack_fill_buffer = flsh.io.filling_buffer
 
   s2_nack           := widthMap(w => (s2_nack_miss(w) || s2_nack_hit(w) || s2_nack_victim(w) || s2_nack_data(w) || s2_nack_wb(w) || (s2_nack_flsh(w)) || s2_nack_fill_buffer(w)) && s2_type =/= t_replay)
@@ -1035,7 +1035,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   flsh.io.req.bits(0).hit := s2_hit(0)
   flsh.io.req.bits(0).dirty := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._1 || ((s2_type === t_replay) && s2_replay_dirty)
   flsh.io.req.bits(0).new_coh := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._3
-  // todo metadata updates
 
   // Miss handling
   for (w <- 0 until memWidth) {
