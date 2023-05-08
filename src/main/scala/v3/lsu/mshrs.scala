@@ -30,6 +30,9 @@ class BoomDCacheReqInternal(implicit p: Parameters) extends BoomDCacheReq()(p)
   val old_meta  = new L1Metadata
   val way_en    = UInt(nWays.W)
 
+  // flush info (do we have to write back?)
+  val dirty = Bool()
+
   // Used in the MSHRs
   val sdq_id    = UInt(log2Ceil(cfg.nSDQ).W)
 }
@@ -194,7 +197,9 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
       new_coh := dirtier_coh
     }
 
-    flush_queued := flush_queued | isFlush(req.uop.mem_cmd)
+    when (isFlush(io.req.uop.mem_cmd)) {
+      flush_queued := true.B
+    }
   }
 
   def handle_pri_req(old_state: UInt): UInt = {
@@ -376,6 +381,7 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
     io.replay <> rpq.io.deq
     io.replay.bits.way_en    := req.way_en
     io.replay.bits.addr := Cat(req_tag, req_idx, rpq.io.deq.bits.addr(blockOffBits-1,0))
+    io.replay.bits.dirty := new_coh.state === ClientStates.Dirty
     when (io.replay.fire && isWrite(rpq.io.deq.bits.uop.mem_cmd)) {
       // Set dirty bit
       val (is_hit, _, coh_on_hit) = new_coh.onAccess(rpq.io.deq.bits.uop.mem_cmd)

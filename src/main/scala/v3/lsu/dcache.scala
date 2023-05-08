@@ -320,7 +320,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   io.req.ready := state === s_invalid
   io.probe_rdy := state.isOneOf(s_invalid, s_super_release_ack)
-  io.filling_buffer := state === s_fill_buffer
+  io.filling_buffer := state.isOneOf(s_fill_buffer, s_super_release_data, s_super_release_ack)
 
   io.rep.valid := (state === s_super_release) || (state === s_super_release_data && data_req_cnt < refillCycles.U)
   io.rep.bits := Mux(req.hit && req.dirty, super_release_data, super_release)
@@ -340,6 +340,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.handling_idx := req.idx
 
   dontTouch(io.req)
+  dontTouch(io.filling_buffer)
   
   when (state === s_invalid) {
     io.flush_inc_valid := false.B
@@ -455,7 +456,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
 
   val tag_idx_match = (0 until memWidth).map(w => mshrs.map(m => (!m.io.req.ready && (m.io.handling_tag === (io.req.bits(w).tag)) && (m.io.handling_idx === (io.req.bits(w).idx)))))
   io.nack := tag_idx_match(0).reduce(_||_)
-  io.filling_buffer := (0 until memWidth).map(w => (w != 0).B && mshrs.map(_.io.filling_buffer).zip(tag_idx_match(w)).map(m => m._1 && m._2).reduce(_||_))
+  io.filling_buffer := (0 until memWidth).map(w => mshrs.map(_.io.filling_buffer).zip(tag_idx_match(w)).map(m => m._1 && m._2).reduce(_||_))
 
   io.flushing := flush_counter =/= 0.U
 
@@ -731,11 +732,13 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   // ------------
   // MSHR Replays
   val replay_req = Wire(Vec(memWidth, new BoomDCacheReq))
+  val replay_dirty = Wire(Bool())
   replay_req               := DontCare
   replay_req(0).uop        := mshrs.io.replay.bits.uop
   replay_req(0).addr       := mshrs.io.replay.bits.addr
   replay_req(0).data       := mshrs.io.replay.bits.data
   replay_req(0).is_hella   := mshrs.io.replay.bits.is_hella
+  replay_dirty             := mshrs.io.replay.bits.dirty
   mshrs.io.replay.ready    := metaReadArb.io.in(0).ready && dataReadArb.io.in(1).ready
   // Tag read for MSHR replays
   // We don't actually need to read the metadata, for replays we already know our way
@@ -838,6 +841,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   dontTouch(s0_send_resp_or_nack)
 
   val s1_req          = RegNext(s0_req)
+  val s1_replay_dirty = RegNext(replay_dirty) // carry the dirty bit of the replay request all the way to S2
   for (w <- 0 until memWidth)
     s1_req(w).uop.br_mask := GetNewBrMask(io.lsu.brupdate, s0_req(w).uop)
   val s2_store_failed = Wire(Bool())
@@ -880,6 +884,10 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   for (w <- 0 until memWidth)
     s2_req(w).uop.br_mask := GetNewBrMask(io.lsu.brupdate, s1_req(w).uop)
 
+  val s2_replay_dirty = RegNext(s1_replay_dirty)
+
+  dontTouch(s1_replay_dirty)
+  dontTouch(s2_replay_dirty)
   dontTouch(s1_valid)
   dontTouch(s1_req)
   dontTouch(s1_type)
@@ -1001,6 +1009,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   dontTouch(s2_nack_flsh)
   dontTouch(s2_send_resp)
   dontTouch(s2_send_nack)
+  dontTouch(s2_nack_fill_buffer)
   dontTouch(s2_nack)
   // hits always send a response
   // If MSHR is not available, LSU has to replay this request later
@@ -1008,8 +1017,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   s2_store_failed := s2_valid(0) && s2_nack(0) && s2_send_nack(0) && s2_req(0).uop.uses_stq
 
   val cacheable = edge.manager.supportsAcquireBFast(s2_req(0).addr, lgCacheBlockBytes.U)
-  // can we flush already or must we queue into the MSHR?
-  val s2_flush_valid = cacheable && isFlush(s2_req(0).uop.mem_cmd) && (s2_hit(0) || !mshrs.io.block_hit(0))  
+  // can we flush already? (if req is valid, we can either flush immediately (cache hit or MSHR miss) or we need to piggyback and outgoing MSHR)
+  val s2_flush_valid = s2_valid(0) && cacheable && isFlush(s2_req(0).uop.mem_cmd) && (s2_hit(0) || !mshrs.io.block_hit(0))  
   
   // queue the flush request(s)
   for (w <- 0 until memWidth) { // Note: since the actual flush is always request 0, the other "requests" are only probes
@@ -1024,18 +1033,20 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   // queue required details for request 0 (real flush). probes dont need this info
   flsh.io.req.bits(0).way_en := s2_tag_match_way(0)
   flsh.io.req.bits(0).hit := s2_hit(0)
-  flsh.io.req.bits(0).dirty := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._1
+  flsh.io.req.bits(0).dirty := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._1 || ((s2_type === t_replay) && s2_replay_dirty)
   flsh.io.req.bits(0).new_coh := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._3
   // todo metadata updates
 
   // Miss handling
   for (w <- 0 until memWidth) {
-    mshrs.io.req(w).valid := s2_valid(w)          &&
-                            !s2_hit(w)            &&
-                            !s2_nack_hit(w)       &&
-                            !s2_nack_victim(w)    &&
-                            !s2_nack_data(w)      &&
-                            !s2_nack_wb(w)        &&
+    mshrs.io.req(w).valid := s2_valid(w)            &&
+                            !s2_hit(w)              &&
+                            !s2_nack_hit(w)         &&
+                            !s2_nack_victim(w)      &&
+                            !s2_nack_data(w)        &&
+                            !s2_nack_flsh(w)        &&
+                            !s2_nack_wb(w)          &&
+                            !s2_nack_fill_buffer(w) && // nack if a flush to same address is ongoing in its fillbuffer/superrelease state
                              s2_type.isOneOf(t_lsu, t_prefetch)             &&
                             !IsKilledByBranch(io.lsu.brupdate, s2_req(w).uop) &&
                             !(io.lsu.exception && s2_req(w).uop.uses_ldq)   &&
