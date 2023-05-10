@@ -61,8 +61,7 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
     val idx = Output(Valid(UInt()))
     val way = Output(Valid(UInt()))
     val tag = Output(Valid(UInt()))
-
-
+    
     val mem_acquire = Decoupled(new TLBundleA(edge.bundle))
 
     val mem_grant   = Flipped(Decoupled(new TLBundleD(edge.bundle)))

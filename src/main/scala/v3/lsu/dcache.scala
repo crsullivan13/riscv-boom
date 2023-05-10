@@ -1006,8 +1006,14 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val s2_nack_data   = widthMap(w => data.io.nacks(w))
   // Can't allocate MSHR for same set currently being written back
   val s2_nack_wb     = widthMap(w => s2_valid(w) && !s2_hit(w) && s2_wb_idx_matches(w))
-  // Flush unit is not ready or there is an outgoing flush for this address are waiting for an incoming ack
-  val s2_nack_flsh   = widthMap(w => ((w == 0).B && isFlush(s2_req(w).uop.mem_cmd) && !flsh.io.req.ready) || flsh.io.nack(w))
+  // Flush unit is not ready or there is an outgoing flush for this address
+  val s2_flsh_nrdy = !flsh.io.req.ready
+  val s2_flsh_nack = flsh.io.nack
+  val s2_nack_flsh   = widthMap(w => ((w == 0).B && 
+                                        ( (flsh.io.req.valid && (s2_flsh_nrdy(0) || s2_flsh_nack(0))) ||
+                                          (!isFlush(s2_req(0).uop.mem_cmd) && s2_flsh_nack(0)) ) ) ||
+                                      ((w != 0). B && s2_flsh_nack(w))
+                                )
 
   s2_nack           := widthMap(w => (s2_nack_miss(w) || s2_nack_hit(w) || s2_nack_victim(w) || s2_nack_data(w) || s2_nack_wb(w) || (s2_nack_flsh(w))) && s2_type =/= t_replay)
   val s2_send_resp = widthMap(w => (RegNext(s1_send_resp_or_nack(w)) && !s2_nack(w) &&
