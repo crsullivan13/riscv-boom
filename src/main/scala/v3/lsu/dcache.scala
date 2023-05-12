@@ -261,7 +261,6 @@ class BoomProbeUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 class FlushReq(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
   val tag = Bits(tagBits.W)
   val idx = Bits(idxBits.W)
-  val replay = Bool() 
   val way_en = Bits(nWays.W)
   val hit = Bool()
   val dirty = Bool()
@@ -404,17 +403,16 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     val nack = Output(Vec(memWidth, Bool())) // nack for the first (0th) request AKA the actual flush
   })
 
-  val metaWriteArb = Module(new Arbiter(new L1MetaWriteReq, cfg.nMSHRs + cfg.nFlshMSHRs))
-  val blockReadArb = Module(new Arbiter(new L1BlockReadReq, cfg.nMSHRs + cfg.nFlshMSHRs))
+  val metaWriteArb = Module(new Arbiter(new L1MetaWriteReq, cfg.nFlshMSHRs))
+  val blockReadArb = Module(new Arbiter(new L1BlockReadReq, cfg.nFlshMSHRs))
   val mshr_alloc_idx = Wire(UInt())
-  val replay_mshr_alloc_idx = Wire(UInt())
-  val flush_counter = RegInit(0.U(log2Ceil(cfg.nMSHRs + cfg.nFlshMSHRs +1).W))
-  val update_counter = WireInit(0.U(log2Ceil(cfg.nMSHRs + cfg.nFlshMSHRs + 1).W))
+  val flush_counter = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs +1).W))
+  val update_counter = WireInit(0.U(log2Ceil(cfg.nFlshMSHRs + 1).W))
 
   io.super_release_ack.ready := false.B
   
   // from 0 to cfg.NMSHRs are the dedicated flush mshrs for misses while nFlshMSHRs are the standard dcache flshmshrs.
-  val mshrs = (0 until (cfg.nMSHRs + cfg.nFlshMSHRs)) map { i =>
+  val mshrs = (0 until (cfg.nFlshMSHRs)) map { i =>
     val mshr = Module(new BoomFlushMSHR)
     val id =  (cfg.nMSHRs + 1 + i).U
     mshr.io.id := id
@@ -424,6 +422,8 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
 
     mshr.io.req.bits := io.req.bits(0)
     mshr.io.data_resp := io.data_resp
+
+    mshr.io.req.valid := (i.U === mshr_alloc_idx) && io.req.valid && !io.nack(0)
 
     mshr.io.super_release_ack := io.super_release_ack.valid && 
                                 (io.super_release_ack.bits.source === id)      // are we the recipient?
@@ -435,20 +435,12 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     mshr 
   }
 
-  for (i <- 0 until cfg.nMSHRs) {
-    mshrs(i).io.req.valid := (i.U === replay_mshr_alloc_idx) && io.req.valid && io.req.bits(0).replay
-  }
-
-  for (i <- 0 until cfg.nFlshMSHRs) {
-    mshrs(cfg.nMSHRs + i).io.req.valid := (i.U === mshr_alloc_idx) && io.req.valid && !io.req.bits(0).replay
-  }
-
   io.meta_write <> metaWriteArb.io.out
   io.data_req <> blockReadArb.io.out
 
   io.probe_rdy := mshrs.map(_.io.probe_rdy).reduce(_||_)
 
-  io.req.ready := mshrs.drop(cfg.nMSHRs).map(_.io.req.ready).reduce(_||_)
+  io.req.ready := mshrs.map(_.io.req.ready).reduce(_||_)
 
   TLArbiter.lowestFromSeq(edge, io.rep,  mshrs.map(_.io.rep))
 
@@ -462,16 +454,10 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   io.flushing := flush_counter =/= 0.U
 
   // Try to round-robin the MSHRs
-  val replay_mshr_head      = RegInit(0.U(log2Ceil(cfg.nMSHRs).W))
-  replay_mshr_alloc_idx    := RegNext(AgePriorityEncoder(mshrs.map(m=>m.io.req.ready), replay_mshr_head))
   val mshr_head      = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs).W))
   mshr_alloc_idx    := RegNext(AgePriorityEncoder(mshrs.map(m=>m.io.req.ready), mshr_head))
-  when (io.req.ready && io.req.valid) {
-    when (!io.req.bits(0).replay) {
-      mshr_head := WrapInc(mshr_head, cfg.nFlshMSHRs)
-    } .otherwise {
-      replay_mshr_head := WrapInc(replay_mshr_head, cfg.nMSHRs)
-    } 
+  when (io.req.ready && io.req.valid && !io.nack(0)) {
+    mshr_head := WrapInc(mshr_head, cfg.nFlshMSHRs)
   }
   
   val add = mshrs.map(m=> (m.io.flush_inc_valid && !m.io.flush_inc).asUInt).reduce(_+_)
@@ -632,12 +618,12 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int, nBanks: Int)(implic
 
   protected def cacheClientParameters = cfg.scratch.map(x => Seq()).getOrElse(Seq(TLMasterParameters.v1(
     name          = s"Core ${staticIdForMetadataUseOnly} DCache",
-    sourceId      = IdRange(0, 1 max (2*cfg.nMSHRs + cfg.nFlshMSHRs + 1)),
+    sourceId      = IdRange(0, 1 max (cfg.nMSHRs + cfg.nFlshMSHRs + 1)),
     supportsProbe = TransferSizes(cfg.blockBytes, cfg.blockBytes))))
 
   protected def mmioClientParameters = Seq(TLMasterParameters.v1(
     name          = s"Core ${staticIdForMetadataUseOnly} DCache MMIO",
-    sourceId      = IdRange(2*cfg.nMSHRs + cfg.nFlshMSHRs + 1, 2*cfg.nMSHRs + cfg.nFlshMSHRs + 1 + cfg.nMMIOs),
+    sourceId      = IdRange(cfg.nMSHRs + cfg.nFlshMSHRs + 1, cfg.nMSHRs + cfg.nFlshMSHRs + 1 + cfg.nMMIOs),
     requestFifo   = true))
 
   val node = TLClientNode(Seq(TLMasterPortParameters.v1(
@@ -1053,14 +1039,12 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
     flsh.io.req.valid := (w == 0).B && s2_flush_valid
     flsh.io.req.bits(w).tag := s2_req(w).addr >> untagBits
     flsh.io.req.bits(w).idx := s2_req(w).addr(idxMSB, idxLSB)
-    flsh.io.req.bits(w).replay := DontCare
     flsh.io.req.bits(w).way_en := DontCare
     flsh.io.req.bits(w).hit := DontCare
     flsh.io.req.bits(w).dirty := DontCare
     flsh.io.req.bits(w).new_coh := DontCare
   }
   // queue required details for request 0 (real flush). probes dont need this info
-  flsh.io.req.bits(0).replay := s2_type === t_replay
   flsh.io.req.bits(0).way_en := s2_tag_match_way(0)
   flsh.io.req.bits(0).hit := s2_hit(0)
   flsh.io.req.bits(0).dirty := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._1 || ((s2_type === t_replay) && s2_replay_dirty)
