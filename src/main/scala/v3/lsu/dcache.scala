@@ -334,7 +334,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.data_req.bits.idx := req.idx
   io.data_req.bits.tag := req.tag
   
-  io.flush_inc_valid := false.B
+  io.flush_inc_valid := (state === s_invalid && io.req.valid) || (state === s_super_release_ack && io.super_release_ack)
   io.flush_inc := state === s_super_release_ack
   io.handling_tag := req.tag
   io.handling_idx := req.idx
@@ -342,7 +342,6 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   dontTouch(io.req)
   
   when (state === s_invalid) {
-    io.flush_inc_valid := false.B
     when (io.req.valid) {
       req := io.req.bits
       r1_data_req_fired := false.B
@@ -374,12 +373,10 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     }
   } .elsewhen (state === s_super_release) {
     when (io.rep.ready) {
-      io.flush_inc_valid := true.B
       state := s_super_release_ack
     }
   } .elsewhen (state === s_super_release_ack) {
     when (io.super_release_ack) {
-      io.flush_inc_valid := true.B
       state := s_invalid
     }
   }
@@ -463,8 +460,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   val add = mshrs.map(m=> (m.io.flush_inc_valid && !m.io.flush_inc).asUInt).reduce(_+_)
   val subtract = mshrs.map(m=> (m.io.flush_inc_valid && m.io.flush_inc).asUInt).reduce(_+_)
   // Update flush counter
-  update_counter := add - subtract
-  flush_counter := flush_counter + update_counter
+  flush_counter := flush_counter + add - subtract
 
   dontTouch(update_counter)
   dontTouch(add)

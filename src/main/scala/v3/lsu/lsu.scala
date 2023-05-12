@@ -1503,8 +1503,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       io.dmem.force_order := true.B
       store_needs_order   := true.B
     }
-    clear_store := Mux(stq(stq_head).bits.uop.is_fence, io.dmem.ordered,
-                                                        stq(stq_head).bits.succeeded)
+    clear_store := Mux(stq(stq_head).bits.uop.is_fence, io.dmem.ordered && !io.dmem.dcache_flushing,
+                                                        stq(stq_head).bits.succeeded) // only clear store if the dcache appears ordered and if we have no unacknowledged flushes
   }
 
   when (clear_store)
