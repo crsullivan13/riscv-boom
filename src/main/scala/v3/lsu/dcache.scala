@@ -395,7 +395,10 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
 
   val metaWriteArb = Module(new Arbiter(new L1MetaWriteReq, cfg.nFlshMSHRs))
   val blockReadArb = Module(new Arbiter(new L1BlockReadReq, cfg.nFlshMSHRs))
+  val tag_idx_match = Wire(Vec(memWidth, Bool()))
   val mshr_alloc_idx = Wire(UInt())
+  val mshr_rdy = WireInit(false.B)
+  val mshr_valid = io.req.valid && !tag_idx_match(0)
   val flush_counter = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs +1).W))
   val update_counter = WireInit(0.U(log2Ceil(cfg.nFlshMSHRs + 1).W))
 
@@ -413,7 +416,11 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     mshr.io.req.bits := io.req.bits(0)
     mshr.io.data_resp := io.data_resp
 
-    mshr.io.req.valid := (i.U === mshr_alloc_idx) && io.req.valid && !io.nack(0)
+    mshr.io.req.valid := (i.U === mshr_alloc_idx) && mshr_valid
+    
+    when (i.U === mshr_alloc_idx) {
+      mshr_rdy := mshr.io.req.ready
+    }
 
     mshr.io.super_release_ack := io.super_release_ack.valid && 
                                 (io.super_release_ack.bits.source === id)      // are we the recipient?
@@ -430,23 +437,23 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
 
   io.probe_rdy := mshrs.map(_.io.probe_rdy).reduce(_||_)
 
-  io.req.ready := mshrs.map(_.io.req.ready).reduce(_||_)
+  io.req.ready := mshr_rdy
 
   TLArbiter.lowestFromSeq(edge, io.rep,  mshrs.map(_.io.rep))
 
-  val tag_idx_match = (0 until memWidth).map(w => 
+  tag_idx_match := (0 until memWidth).map(w => 
             mshrs.map(m => 
               (!m.io.req.ready && (m.io.handling_tag === (io.req.bits(w).tag)) && (m.io.handling_idx === (io.req.bits(w).idx)))
-              )
+              ).reduce(_||_)
             )
-  io.nack := tag_idx_match.map(t => t.reduce(_||_))
+  io.nack := tag_idx_match
 
   io.flushing := flush_counter =/= 0.U
 
   // Try to round-robin the MSHRs
   val mshr_head      = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs).W))
   mshr_alloc_idx    := RegNext(AgePriorityEncoder(mshrs.map(m=>m.io.req.ready), mshr_head))
-  when (io.req.ready && io.req.valid && !io.nack(0)) {
+  when (mshr_rdy && mshr_valid) {
     mshr_head := WrapInc(mshr_head, cfg.nFlshMSHRs)
   }
   
