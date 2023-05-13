@@ -288,8 +288,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
   val (s_invalid :: s_meta_write :: s_fill_buffer :: s_super_release_data :: s_super_release :: s_super_release_ack :: Nil) = Enum(6)
   val state = RegInit(s_invalid)
-  val r1_data_req_fired = RegInit(false.B)
-  val r2_data_req_fired = RegInit(false.B)
+  val r2_data_req_fired = WireInit(false.B)
   val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
   val (_, last_beat, all_beats_done, beat_count) = edge.count(io.rep)
   val wb_buffer = Reg(Vec(refillCycles, UInt(encRowBits.W)))
@@ -344,7 +343,6 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   when (state === s_invalid) {
     when (io.req.valid) {
       req := io.req.bits
-      r1_data_req_fired := false.B
       data_req_cnt := 0.U
       state := Mux(io.req.bits.hit, s_meta_write, s_super_release) // do we have to invalidate this block?
     }
@@ -353,12 +351,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
       state := Mux(req.dirty, s_fill_buffer, s_super_release)
     }
   } .elsewhen (state === s_fill_buffer) {
-    r1_data_req_fired := false.B
-    r2_data_req_fired := RegNext(r1_data_req_fired)
-
-    when(io.data_req.fire) {
-      r1_data_req_fired := true.B
-    }
+    r2_data_req_fired := RegNext(io.data_req.fire)
 
     when (r2_data_req_fired) {
       wb_buffer := Mux1H(req.way_en, io.data_resp)
@@ -522,8 +515,8 @@ class BoomDuplicatedDataArray(implicit p: Parameters) extends AbstractBoomDataAr
       
       val braddr = Cat(io.block_read.bits.tag, io.block_read.bits.idx) << blockOffBits
       for (i <- 0 until cacheDataBeats) {
-          val braddri = (braddr + (8*i).U) >> rowOffBits 
-          io.block_read_resp(w)(i) := RegNext(array.read(braddri, io.block_read.bits.way_en(w) && io.block_read.valid).asUInt)
+          val braddri = (braddr + (cacheDataBytes*i).U) >> rowOffBits 
+          io.block_read_resp(w)(i) := array.read(braddri, io.block_read.bits.way_en(w) && io.block_read.valid).asUInt
       }
       
     }
