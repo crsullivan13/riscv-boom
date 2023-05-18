@@ -273,7 +273,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val id = Input(UInt(log2Up(2*cfg.nMSHRs + 1).W))
 
     val req = Flipped(Decoupled(new FlushMSHRReq))
-    val super_release_ack = Input(Bool())
+    val root_release_ack = Input(Bool())
 
     val rep = Decoupled(new TLBundleC(edge.bundle))
     val meta_write = Decoupled(new L1MetaWriteReq)
@@ -283,12 +283,12 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val probe_rdy = Output(Bool())
     val handling_tag = Output(Bits(tagBits.W))
     val handling_idx = Output(Bits(idxBits.W))
-    val flush_inc = Output(Bool()) // 0 for SuperRelease 1 for SuperReleaseAck
+    val flush_inc = Output(Bool()) // 0 for rootRelease 1 for rootReleaseAck
     val flush_inc_valid = Output(Bool())
     val forward_data = Output(Valid(Vec(refillCycles, UInt(encRowBits.W)))) // for flush -> load forwarding
   })
 
-  val (s_invalid :: s_meta_write :: s_fill_buffer :: s_super_release_data :: s_super_release :: s_super_release_ack :: Nil) = Enum(6)
+  val (s_invalid :: s_meta_write :: s_fill_buffer :: s_root_release_data :: s_root_release :: s_root_release_ack :: Nil) = Enum(6)
   val state = RegInit(s_invalid)
   val r2_data_req_fired = WireInit(false.B)
   val data_req_cnt = RegInit(0.U(log2Up(refillCycles+1).W))
@@ -300,32 +300,32 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   val req = Reg(new FlushMSHRReq)
   val r_address = Cat(req.tag, req.idx) << blockOffBits
 
-  val super_release_data = edge.SuperRelease(
+  val root_release_data = edge.RootRelease(
                               fromSource = id,
                               toAddress  = r_address,
                               lgSize = lgCacheBlockBytes.U,
                               data = wb_buffer(data_req_cnt)
                           )._2
 
-  val super_release = edge.SuperRelease(
+  val root_release = edge.RootRelease(
                               fromSource = id,
                               toAddress  = r_address,
                               lgSize = lgCacheBlockBytes.U,
                           )._2 
 
-  dontTouch(super_release)
-  dontTouch(super_release_data)
+  dontTouch(root_release)
+  dontTouch(root_release_data)
   dontTouch(io.data_req)
   dontTouch(io.data_resp)
 
   io.req.ready := state === s_invalid
-  io.probe_rdy := state.isOneOf(s_invalid, s_super_release_ack)
+  io.probe_rdy := state.isOneOf(s_invalid, s_root_release_ack)
 
   io.handling_tag := req.tag
   io.handling_idx := req.idx
 
-  io.rep.valid := (state === s_super_release) || (state === s_super_release_data && (data_req_cnt < refillCycles.U))
-  io.rep.bits := Mux(req.hit && req.dirty, super_release_data, super_release)
+  io.rep.valid := (state === s_root_release) || (state === s_root_release_data && (data_req_cnt < refillCycles.U))
+  io.rep.bits := Mux(req.hit && req.dirty, root_release_data, root_release)
 
   io.meta_write.valid := state === s_meta_write
   io.meta_write.bits.way_en := req.way_en
@@ -339,8 +339,8 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.data_req.bits.idx := req.idx
   io.data_req.bits.tag := req.tag
   
-  io.flush_inc_valid := (state === s_invalid && io.req.valid) || (state === s_super_release_ack && io.super_release_ack)
-  io.flush_inc := state === s_super_release_ack
+  io.flush_inc_valid := (state === s_invalid && io.req.valid) || (state === s_root_release_ack && io.root_release_ack)
+  io.flush_inc := state === s_root_release_ack
 
   io.forward_data.valid := forward_data_valid
   io.forward_data.bits := wb_buffer
@@ -351,11 +351,11 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.req.valid) {
       req := io.req.bits
       data_req_cnt := 0.U
-      state := Mux(io.req.bits.hit, s_meta_write, s_super_release) // do we have to invalidate this block?
+      state := Mux(io.req.bits.hit, s_meta_write, s_root_release) // do we have to invalidate this block?
     }
   } .elsewhen (state === s_meta_write) {
     when (io.meta_write.fire) {
-      state := Mux(req.dirty, s_fill_buffer, s_super_release)
+      state := Mux(req.dirty, s_fill_buffer, s_root_release)
     }
   } .elsewhen (state === s_fill_buffer) {
     r2_data_req_fired := RegNext(io.data_req.fire)
@@ -363,21 +363,21 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (r2_data_req_fired) {
       wb_buffer := Mux1H(req.way_en, io.data_resp)
       forward_data_valid := true.B
-      state := s_super_release_data
+      state := s_root_release_data
     }
-  } .elsewhen (state === s_super_release_data) {
+  } .elsewhen (state === s_root_release_data) {
     when (io.rep.fire) {
       data_req_cnt := data_req_cnt + 1.U
     }
     when ((data_req_cnt === (refillCycles-1).U) && io.rep.fire) {
-      state := s_super_release_ack
+      state := s_root_release_ack
     }
-  } .elsewhen (state === s_super_release) {
+  } .elsewhen (state === s_root_release) {
     when (io.rep.ready) {
-      state := s_super_release_ack
+      state := s_root_release_ack
     }
-  } .elsewhen (state === s_super_release_ack) {
-    when (io.super_release_ack) {
+  } .elsewhen (state === s_root_release_ack) {
+    when (io.root_release_ack) {
       state := s_invalid
       forward_data_valid := false.B
     }
@@ -401,7 +401,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     val flushing = Output(Bool())
 
     val meta_write = Decoupled(new L1MetaWriteReq)
-    val super_release_ack = Flipped(Decoupled(new TLBundleD(edge.bundle)))
+    val root_release_ack = Flipped(Decoupled(new TLBundleD(edge.bundle)))
     val data_req = Decoupled(new L1BlockReadReq)
     val data_resp = Input(Vec(nWays, Vec(refillCycles, UInt(encRowBits.W))))
 
@@ -420,7 +420,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   val flush_counter = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs +1).W))
   val update_counter = WireInit(0.U(log2Ceil(cfg.nFlshMSHRs + 1).W))
 
-  io.super_release_ack.ready := false.B
+  io.root_release_ack.ready := false.B
 
   val req_tags = io.req.bits.map(r => r.addr >> untagBits)
   val req_idx = io.req.bits.map(r => r.addr(idxMSB, idxLSB))
@@ -449,11 +449,11 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
       mshr_rdy := mshr.io.req.ready
     }
 
-    mshr.io.super_release_ack := io.super_release_ack.valid && 
-                                (io.super_release_ack.bits.source === id)      // are we the recipient?
+    mshr.io.root_release_ack := io.root_release_ack.valid && 
+                                (io.root_release_ack.bits.source === id)      // are we the recipient?
 
-    when (io.super_release_ack.bits.source === id) {
-      io.super_release_ack.ready := true.B
+    when (io.root_release_ack.bits.source === id) {
+      io.root_release_ack.ready := true.B
     } 
 
     mshr 
@@ -1142,19 +1142,19 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
     mshrs.io.mem_grant.valid := false.B
     mshrs.io.mem_grant.bits  := DontCare
 
-    flsh.io.super_release_ack.valid := false.B
-    flsh.io.super_release_ack.bits := DontCare
-  } .elsewhen(tl_out.d.bits.opcode === TLMessages.SuperReleaseAck) {
-    flsh.io.super_release_ack <> tl_out.d
+    flsh.io.root_release_ack.valid := false.B
+    flsh.io.root_release_ack.bits := DontCare
+  } .elsewhen(tl_out.d.bits.opcode === TLMessages.ReleaseAck && tl_out.d.bits.param === TLPermissions.RootRelease) {
+    flsh.io.root_release_ack <> tl_out.d
 
     mshrs.io.mem_grant.valid := false.B
     mshrs.io.mem_grant.bits := DontCare
   } .otherwise {
     // This should be GrantData
     mshrs.io.mem_grant <> tl_out.d
-    // flsh doesnt have incoming super release acks
-    flsh.io.super_release_ack.valid := false.B
-    flsh.io.super_release_ack.bits := DontCare
+    // flsh doesnt have incoming root release acks
+    flsh.io.root_release_ack.valid := false.B
+    flsh.io.root_release_ack.bits := DontCare
   }
 
   dataWriteArb.io.in(1) <> mshrs.io.refill
