@@ -144,6 +144,9 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
   rpq.io.enq.valid := ((io.req_pri_val && io.req_pri_rdy) || (io.req_sec_val && io.req_sec_rdy)) && !isPrefetch(io.req.uop.mem_cmd)
   rpq.io.enq.bits  := io.req
   rpq.io.deq.ready := false.B
+  rpq.io.buffer_overwrite.valid := false.B
+  rpq.io.buffer_overwrite.bits := DontCare
+  rpq.io.buffer_overwrite_idx := DontCare
 
 
   val grantack = Reg(Valid(new TLBundleE(edge.bundle)))
@@ -820,6 +823,9 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
   respq.io.flush    := io.exception
   respq.io.enq      <> resp_arb.io.out
   io.resp           <> respq.io.deq
+  respq.io.buffer_overwrite.valid := false.B
+  respq.io.buffer_overwrite.bits := DontCare
+  respq.io.buffer_overwrite_idx := DontCare
 
   for (w <- 0 until memWidth) {
     io.req(w).ready      := (w.U === req_idx) &&

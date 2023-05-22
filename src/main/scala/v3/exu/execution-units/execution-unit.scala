@@ -354,6 +354,9 @@ class ALUExeUnit(
     queue.io.enq.bits.fflags := ifpu.io.resp.bits.fflags
     queue.io.brupdate := io.brupdate
     queue.io.flush := io.req.bits.kill
+    queue.io.buffer_overwrite.valid := false.B
+    queue.io.buffer_overwrite.bits := DontCare
+    queue.io.buffer_overwrite_idx := DontCare
 
     io.ll_fresp <> queue.io.deq
     ifpu_busy := !(queue.io.empty)
@@ -546,6 +549,9 @@ class FPUExeUnit(
     queue.io.enq.bits.fflags := fpu.io.resp.bits.fflags
     queue.io.brupdate          := io.brupdate
     queue.io.flush           := io.req.bits.kill
+    queue.io.buffer_overwrite.valid := false.B
+    queue.io.buffer_overwrite.bits := DontCare
+    queue.io.buffer_overwrite_idx := DontCare
 
     assert (queue.io.enq.ready) // If this backs up, we've miscalculated the size of the queue.
 
@@ -558,6 +564,9 @@ class FPUExeUnit(
     fp_sdq.io.enq.bits.fflags := DontCare
     fp_sdq.io.brupdate         := io.brupdate
     fp_sdq.io.flush          := io.req.bits.kill
+    fp_sdq.io.buffer_overwrite.valid := false.B
+    fp_sdq.io.buffer_overwrite.bits := DontCare
+    fp_sdq.io.buffer_overwrite_idx := DontCare
 
     assert(!(fp_sdq.io.enq.valid && !fp_sdq.io.enq.ready))
 

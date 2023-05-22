@@ -459,11 +459,20 @@ class BranchKillableQueue[T <: boom.v3.common.HasBoomUOP](gen: T, entries: Int, 
 
     val empty   = Output(Bool())
     val count   = Output(UInt(log2Ceil(entries).W))
+
+    val buffer_overwrite = Flipped(Valid(gen))
+    val buffer_overwrite_idx = Input(UInt(log2Ceil(entries).W))
+    val buffer = Output(Vec(entries, Valid(gen)))
   })
 
   val ram     = Mem(entries, gen)
   val valids  = RegInit(VecInit(Seq.fill(entries) {false.B}))
   val uops    = Reg(Vec(entries, new MicroOp))
+
+  for (i <- 0 until entries) {
+    io.buffer(i).valid := valids(i)
+    io.buffer(i).bits := ram(i)
+  }
 
   val enq_ptr = Counter(entries)
   val deq_ptr = Counter(entries)
@@ -531,6 +540,11 @@ class BranchKillableQueue[T <: boom.v3.common.HasBoomUOP](gen: T, entries: Int, 
                         entries.asUInt, 0.U),
                     Mux(deq_ptr.value > enq_ptr.value,
                         entries.asUInt + ptr_diff, ptr_diff))
+  }
+
+  when (io.buffer_overwrite.valid) {
+    assert (valids(io.buffer_overwrite_idx)) // this must be valid
+    ram(io.buffer_overwrite_idx) := io.buffer_overwrite.bits
   }
 }
 
