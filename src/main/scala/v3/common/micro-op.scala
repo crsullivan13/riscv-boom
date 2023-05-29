@@ -98,6 +98,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val is_fence         = Bool()
   val is_fencei        = Bool()
   val is_flush         = Bool()
+  val is_flush_wb       = Bool()
   val is_amo           = Bool()
   val uses_ldq         = Bool()
   val uses_stq         = Bool()

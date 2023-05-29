@@ -274,6 +274,7 @@ class FlushMSHRReq(implicit p: Parameters) extends L1MetaReadReq {
   val hit = Bool()
   val dirty = Bool()
   val new_coh = new ClientMetadata
+  val is_wb = Bool()
 }
 
 class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCacheModule()(p) {
@@ -319,7 +320,20 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
                               fromSource = id,
                               toAddress  = r_address,
                               lgSize = lgCacheBlockBytes.U,
-                          )._2 
+                      )._2
+
+  val root_wb_data = edge.RootWb(
+                              fromSource = id,
+                              toAddress  = r_address,
+                              lgSize = lgCacheBlockBytes.U,
+                              data = wb_buffer(data_req_cnt)
+                      )._2
+
+  val root_wb = edge.RootWb(
+                              fromSource = id,
+                              toAddress  = r_address,
+                              lgSize = lgCacheBlockBytes.U,
+                )._2                    
 
   dontTouch(root_release)
   dontTouch(root_release_data)
@@ -333,7 +347,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.handling_idx := req.idx
 
   io.rep.valid := (state === s_root_release) || (state === s_root_release_data && (data_req_cnt < refillCycles.U))
-  io.rep.bits := Mux(req.hit && req.dirty, root_release_data, root_release)
+  io.rep.bits := Mux(req.hit && req.dirty, Mux(req.is_wb, root_wb_data, root_release_data), Mux(req.is_wb, root_wb, root_release))
 
   io.meta_write.valid := state === s_meta_write
   io.meta_write.bits.way_en := req.way_en
@@ -359,7 +373,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.req.valid) {
       req := io.req.bits
       data_req_cnt := 0.U
-      state := Mux(io.req.bits.hit, s_meta_write, s_root_release) // do we have to invalidate this block?
+      state := Mux(io.req.bits.hit, Mux(io.req.bits.is_wb, s_fill_buffer, s_meta_write), s_root_release) // do we have to invalidate this block?
     }
   } .elsewhen (state === s_meta_write) {
     when (io.meta_write.fire) {
@@ -399,7 +413,6 @@ class FlushReq(implicit p: Parameters) extends BoomBundle()(p) with HasBoomUOP w
   val hit = Bool()
   val dirty = Bool()
   val new_coh = new ClientMetadata
-  val is_read = Bool()
 }
 
 class BoomFlushReqQueue(entries: Int) (implicit p: freechips.rocketchip.config.Parameters) extends BoomModule with HasL1HellaCacheParameters {
@@ -512,6 +525,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     mshr.io.req.bits.hit := flshq.io.deq.bits.hit
     mshr.io.req.bits.dirty := flshq.io.deq.bits.dirty
     mshr.io.req.bits.new_coh := flshq.io.deq.bits.new_coh
+    mshr.io.req.bits.is_wb := flshq.io.deq.bits.uop.is_flush_wb
 
     mshr.io.data_resp := io.data_resp
 
@@ -550,7 +564,7 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   // forwarding flush -> loads
   val forwarding_mshrs = tag_idx_match_mshr.map(t => Mux1H(t, mshrs.map(_.io.forward_data)))
   for (i <- 0 until memWidth) {
-    val forward_valid = io.req.bits(i).is_read && forwarding_mshrs(i).valid
+    val forward_valid = isRead(io.req.bits(i).uop.mem_cmd) && forwarding_mshrs(i).valid
     io.forward_data(i).valid := forward_valid
     io.forward_data(i).bits := forwarding_mshrs(i).bits(req_word_idx(i))
     io.nack(i) := tag_idx_match(i) && !forward_valid
@@ -1149,7 +1163,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
     flsh.io.req.bits(w).hit := DontCare
     flsh.io.req.bits(w).dirty := DontCare
     flsh.io.req.bits(w).new_coh := DontCare
-    flsh.io.req.bits(w).is_read := isRead(s2_req(w).uop.mem_cmd)
     flsh.io.req.bits(w).uop := s2_req(w).uop
   }
   // queue required details for request 0 (real flush). probes dont need this info
