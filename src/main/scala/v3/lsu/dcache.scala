@@ -277,6 +277,11 @@ class FlushMSHRReq(implicit p: Parameters) extends L1MetaReadReq {
   val is_wb = Bool()
 }
 
+class FlushMSHRStatus(implicit p: Parameters) extends L1TagIdxReq {
+  val probe_rdy = Bool() // block the probe unit
+  val is_wb = Bool()
+}
+
 class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCacheModule()(p) {
   val io = IO(new Bundle {
     val id = Input(UInt(log2Up(cfg.nMSHRs + 1 + cfg.nFlshMSHRs).W))
@@ -289,12 +294,9 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val data_req = Decoupled(new L1BlockReadReq)
     val data_resp = Input(Vec(nWays, Vec(refillCycles, UInt(encRowBits.W))))
 
-    val probe_rdy = Output(Bool()) // block the probe unit
-    val handling_tag = Output(Bits(tagBits.W))
-    val handling_idx = Output(Bits(idxBits.W))
-    val flush_inc = Output(Bool()) // 0 for rootRelease 1 for rootReleaseAck
-    val flush_inc_valid = Output(Bool())
-    val forward_data = Output(Valid(Vec(refillCycles, UInt(encRowBits.W)))) // for flush -> load forwarding
+    val status = Valid(new FlushMSHRStatus)
+    val flush_inc = Valid(Bool()) // 0 for rootRelease 1 for rootReleaseAck
+    val forward_data = Valid(Vec(refillCycles, UInt(encRowBits.W))) // for flush -> load forwarding
   })
 
   val (s_invalid :: s_meta_write :: s_fill_buffer :: s_root_release_data :: s_root_release :: s_root_release_ack :: Nil) = Enum(6)
@@ -341,11 +343,13 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   dontTouch(io.data_resp)
 
   io.req.ready := state === s_invalid
-  io.probe_rdy := state.isOneOf(s_invalid, s_root_release_ack)
 
-  io.handling_tag := req.tag
-  io.handling_idx := req.idx
-
+  io.status.bits.probe_rdy := state.isOneOf(s_invalid, s_root_release_ack)
+  io.status.bits.tag := req.tag
+  io.status.bits.idx := req.idx
+  io.status.bits.is_wb := req.is_wb
+  io.status.valid := state =/= s_invalid
+  
   io.rep.valid := (state === s_root_release) || (state === s_root_release_data && (data_req_cnt < refillCycles.U))
   io.rep.bits := Mux(req.hit && req.dirty, Mux(req.is_wb, root_wb_data, root_release_data), Mux(req.is_wb, root_wb, root_release))
 
@@ -361,8 +365,8 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.data_req.bits.idx := req.idx
   io.data_req.bits.tag := req.tag
   
-  io.flush_inc_valid := (state === s_invalid && io.req.valid) || (state === s_root_release_ack && io.root_release_ack)
-  io.flush_inc := state === s_root_release_ack
+  io.flush_inc.valid := (state === s_invalid && io.req.valid) || (state === s_root_release_ack && io.root_release_ack)
+  io.flush_inc.bits := state === s_root_release_ack
 
   io.forward_data.valid := forward_data_valid
   io.forward_data.bits := wb_buffer
@@ -548,13 +552,13 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   io.meta_write <> metaWriteArb.io.out
   io.data_req <> blockReadArb.io.out
 
-  io.probe_rdy := mshrs.map(_.io.probe_rdy).reduce(_&&_)
+  io.probe_rdy := mshrs.map(_.io.status.bits.probe_rdy).reduce(_&&_)
 
   TLArbiter.lowestFromSeq(edge, io.rep,  mshrs.map(_.io.rep))
 
   val tag_idx_match_mshr = (0 until memWidth).map(w => 
             mshrs.map(m => 
-              (!m.io.req.ready && (m.io.handling_tag === (req_tags(w))) && (m.io.handling_idx === (req_idx(w))))
+              (!m.io.req.ready && (m.io.status.bits.tag === (req_tags(w))) && (m.io.status.bits.idx === (req_idx(w))))
             )
           )
   tag_idx_match := tag_idx_match_mshr.map(t => t.reduce(_||_)).zip(flshq.io.tag_match_idx).map(t => t._1 || t._2)
@@ -562,12 +566,15 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   io.flushing := flush_counter =/= 0.U
 
   // forwarding flush -> loads
-  val forwarding_mshrs = tag_idx_match_mshr.map(t => Mux1H(t, mshrs.map(_.io.forward_data)))
+  val match_mshrs_forward_data = tag_idx_match_mshr.map(t => Mux1H(t, mshrs.map(_.io.forward_data)))
+  val match_mshrs_status = tag_idx_match_mshr.map(t => Mux1H(t, mshrs.map(_.io.status)))
   for (i <- 0 until memWidth) {
-    val forward_valid = isRead(io.req.bits(i).uop.mem_cmd) && forwarding_mshrs(i).valid
+    val forward_valid = isRead(io.req.bits(i).uop.mem_cmd) && match_mshrs_forward_data(i).valid
     io.forward_data(i).valid := forward_valid
-    io.forward_data(i).bits := forwarding_mshrs(i).bits(req_word_idx(i))
-    io.nack(i) := tag_idx_match(i) && !forward_valid
+    io.forward_data(i).bits := match_mshrs_forward_data(i).bits(req_word_idx(i))
+    // allows (hit) stores to proceed if there is an outgoing writeback
+    val store_can_proceed = isWrite(io.req.bits(i).uop.mem_cmd) && io.req.bits(i).hit && match_mshrs_status(i).valid && match_mshrs_status(i).bits.is_wb
+    io.nack(i) := tag_idx_match(i) && !forward_valid && !store_can_proceed
   }
 
   // Try to round-robin the MSHRs
@@ -577,8 +584,8 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     mshr_head := WrapInc(mshr_head, cfg.nFlshMSHRs)
   }
   
-  val add = mshrs.map(m=> (m.io.flush_inc_valid && !m.io.flush_inc).asUInt).reduce(_+_)
-  val subtract = mshrs.map(m=> (m.io.flush_inc_valid && m.io.flush_inc).asUInt).reduce(_+_)
+  val add = mshrs.map(m=> (m.io.flush_inc.valid && !m.io.flush_inc.bits).asUInt).reduce(_+_)
+  val subtract = mshrs.map(m=> (m.io.flush_inc.valid && m.io.flush_inc.bits).asUInt).reduce(_+_)
   // Update flush counter
   flush_counter := flush_counter + add - subtract
 
