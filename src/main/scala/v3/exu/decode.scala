@@ -598,7 +598,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
 
   // repackage the immediate, and then pass the fewest number of bits around
   val di24_20 = Mux(cs.imm_sel === IS_B || cs.imm_sel === IS_S, inst(11,7), inst(24,20))
-  uop.imm_packed := Mux(uop.is_flush, 0.U, Cat(inst(31,25), di24_20, inst(19,12)))
+  uop.imm_packed := Cat(inst(31,25), di24_20, inst(19,12))
 
   //-------------------------------------------------------------
 

@@ -28,6 +28,8 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   val io = IO(new Bundle {
     val req = Flipped(Decoupled(new WritebackReq(edge.bundle)))
     val meta_read = Decoupled(new L1MetaReadReq)
+    // val meta_only = Output(Bool())
+    // val block_state = Input(new ClientMetadata())
     val resp = Output(Bool())
     val idx = Output(Valid(UInt()))
     val data_req = Decoupled(new L1DataReadReq)
@@ -55,6 +57,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   io.release.bits    := DontCare
   io.req.ready       := false.B
   io.meta_read.valid := false.B
+  // io.meta_only := false.B
   io.meta_read.bits  := DontCare
   io.data_req.valid  := false.B
   io.data_req.bits   := DontCare
@@ -83,11 +86,29 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   when (state === s_invalid) {
     io.req.ready := true.B
     when (io.req.fire) {
-      state := s_fill_buffer
+      state := s_fill_buffer //Mux(io.req.bits.voluntary, s_meta_read, s_fill_buffer)
       data_req_cnt := 0.U
       req := io.req.bits
       acked := false.B
     }
+  // } .elsewhen (state === s_meta_read) {
+  //   io.meta_read.valid := true.B
+  //   io.meta_read.bits.idx := req.idx
+  //   io.meta_read.bits.tag := req.tag
+  //   io.meta_read.bits.way_en := req.way_en
+  //   io.meta_only := true.B
+  //   when (io.meta_read.fire) {
+  //     state := s_meta_wait
+  //   }
+  // } .elsewhen (state === s_meta_wait) {
+  //   state := s_meta_resp
+  // } .elsewhen (state === s_meta_resp) {
+  //   when (io.block_state === ClientStates.Nothing) {
+  //     state := s_invalid
+  //     io.resp := true.B
+  //   } .otherwise {
+  //     state := s_fill_buffer
+  //   }
   } .elsewhen (state === s_fill_buffer) {
     io.meta_read.valid := data_req_cnt < refillCycles.U
     io.meta_read.bits.idx := req.idx
@@ -214,13 +235,13 @@ class BoomProbeUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
 
   io.mshr_wb_rdy := !state.isOneOf(s_release, s_writeback_req, s_writeback_resp, s_meta_write, s_meta_write_resp)
-  io.flsh_mshr_rdy := state.isOneOf(s_invalid, s_meta_read, s_meta_resp, s_mshr_req)
+  io.flsh_mshr_rdy := state.isOneOf(s_invalid, s_meta_write_resp)
 
   io.lsu_release.valid := state === s_lsu_release
   io.lsu_release.bits  := edge.ProbeAck(req, report_param)
 
-  // inform the flush unit to invalidate a probe from its queue
-  io.flsh_invalidate.valid := state === s_mshr_resp
+  // inform the flush unit to invalidate a probe from its queue after we have invalidated the cacheline
+  io.flsh_invalidate.valid := state === s_meta_write_resp
   io.flsh_invalidate.bits.idx := req_idx
   io.flsh_invalidate.bits.tag := req_tag
 
@@ -358,7 +379,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.meta_write.bits.idx := req.idx
   io.meta_write.bits.tag := req.tag
   io.meta_write.bits.data.tag := req.tag
-  io.meta_write.bits.data.coh := req.new_coh
+  io.meta_write.bits.data.coh := ClientMetadata.onReset
 
   io.data_req.valid := state === s_fill_buffer && !r2_data_req_fired
   io.data_req.bits.way_en := req.way_en
@@ -377,7 +398,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.req.valid) {
       req := io.req.bits
       data_req_cnt := 0.U
-      state := Mux(io.req.bits.hit, Mux(io.req.bits.is_wb, s_fill_buffer, s_meta_write), s_root_release) // do we have to invalidate this block?
+      state := Mux(io.req.bits.hit, Mux(io.req.bits.is_wb, Mux(io.req.bits.dirty, s_fill_buffer, s_root_release), s_meta_write), s_root_release) // do we have to invalidate this block?
     }
   } .elsewhen (state === s_meta_write) {
     when (io.meta_write.fire) {
@@ -445,10 +466,26 @@ class BoomFlushReqQueue(entries: Int) (implicit p: freechips.rocketchip.config.P
   queue.io.buffer_overwrite_idx := DontCare
   queue.io.buffer_overwrite.bits := DontCare
 
+  // val q_tags = Wire(Vec(entries, UInt(tagBits.W)))
+  // val q_idxs = Wire(Vec(entries, UInt(idxBits.W)))
+  // val q_valids = Wire(Vec(entries, Bool()))
+  // q_tags := DontCare
+  // q_valids := DontCare
+  // q_idxs := DontCare
+
+  // dontTouch(q_tags)
+  // dontTouch(q_idxs)
+  // dontTouch(q_valids)
+
   val queue_valids_tag_idx = queue.io.buffer.map(q => (q.valid, q.bits.addr >> untagBits, q.bits.addr(idxMSB, idxLSB)))
   io.tag_match_idx := io.req_probe.map(req => queue_valids_tag_idx.map(q => q._1 && req.tag === q._2 && req.idx === q._3).reduce(_||_))
 
-  val probe_invalidate_match = queue_valids_tag_idx.map(q => io.probe_invalidate.valid && q._1 === io.probe_invalidate.bits.tag && q._2 === io.probe_invalidate.bits.idx)
+  // for (i <- 0 until entries) {
+  //   q_valids(i) := queue_valids_tag_idx(i)._1
+  //   q_tags(i) := queue_valids_tag_idx(i)._2
+  //   q_idxs(i) := queue_valids_tag_idx(i)._3
+  // }
+  val probe_invalidate_match = queue_valids_tag_idx.map(q => io.probe_invalidate.valid && q._1 && (q._2 === io.probe_invalidate.bits.tag) && (q._3 === io.probe_invalidate.bits.idx))
   for (i <- 0 until entries) {
     when (probe_invalidate_match(i)) {
       queue.io.buffer_overwrite.valid := true.B
@@ -904,7 +941,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   // -----------
   // Write-backs
-  val wb_fire = wb.io.meta_read.fire && wb.io.data_req.fire
+  val wb_fire = (wb.io.meta_read.fire && wb.io.data_req.fire) //|| (wb.io.meta_only && wb.io.meta_read.fire)
   val wb_req = Wire(Vec(memWidth, new BoomDCacheReq))
   wb_req             := DontCare
   wb_req(0).uop      := NullMicroOp
@@ -915,7 +952,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   // Tag read for write-back
   metaReadArb.io.in(2).valid        := wb.io.meta_read.valid
   metaReadArb.io.in(2).bits.req(0)  := wb.io.meta_read.bits
-  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(2).ready
+  wb.io.meta_read.ready := (metaReadArb.io.in(2).ready && dataReadArb.io.in(2).ready) //|| (wb.io.meta_only && metaReadArb.io.in(2).ready)
   // Data read for write-back
   dataReadArb.io.in(2).valid        := wb.io.data_req.valid
   dataReadArb.io.in(2).bits.req(0)  := wb.io.data_req.bits
@@ -1221,6 +1258,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   prober.io.req.bits    := tl_out.b.bits
   prober.io.way_en      := s2_tag_match_way(0)
   prober.io.block_state := s2_hit_state(0)
+  //wb.io.block_state := s2_hit_state(0)
   metaWriteArb.io.in(1) <> prober.io.meta_write
   prober.io.mshr_rdy    := mshrs.io.probe_rdy
   prober.io.wb_rdy      := (prober.io.meta_write.bits.idx =/= wb.io.idx.bits) || !wb.io.idx.valid
@@ -1290,7 +1328,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   lsu_release_arb.io.in(0) <> wb.io.lsu_release
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
-  TLArbiter.lowest(edge, tl_out.c, flsh.io.rep, wb.io.release, prober.io.rep)
+  TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep, flsh.io.rep)
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
