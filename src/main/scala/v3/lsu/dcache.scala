@@ -316,7 +316,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     val data_resp = Input(Vec(nWays, Vec(refillCycles, UInt(encRowBits.W))))
 
     val status = Valid(new FlushMSHRStatus)
-    val flush_inc = Valid(Bool()) // 0 for rootRelease 1 for rootReleaseAck
+    val flush_inc = Bool() // 0 for rootRelease 1 for rootReleaseAck
     val forward_data = Valid(Vec(refillCycles, UInt(encRowBits.W))) // for flush -> load forwarding
   })
 
@@ -386,8 +386,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.data_req.bits.idx := req.idx
   io.data_req.bits.tag := req.tag
   
-  io.flush_inc.valid := (state === s_invalid && io.req.valid) || (state === s_root_release_ack && io.root_release_ack)
-  io.flush_inc.bits := state === s_root_release_ack
+  io.flush_inc := (state === s_root_release_ack && io.root_release_ack)
 
   io.forward_data.valid := forward_data_valid
   io.forward_data.bits := wb_buffer
@@ -621,8 +620,8 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
     mshr_head := WrapInc(mshr_head, cfg.nFlshMSHRs)
   }
   
-  val add = mshrs.map(m=> (m.io.flush_inc.valid && !m.io.flush_inc.bits).asUInt).reduce(_+_)
-  val subtract = mshrs.map(m=> (m.io.flush_inc.valid && m.io.flush_inc.bits).asUInt).reduce(_+_)
+  val add = Mux(flshq.io.enq.fire, 1.U, 0.U)
+  val subtract = mshrs.map(m=> (m.io.flush_inc).asUInt).reduce(_+_)
   // Update flush counter
   flush_counter := flush_counter + add - subtract
 
