@@ -235,13 +235,13 @@ class BoomProbeUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
 
 
   io.mshr_wb_rdy := !state.isOneOf(s_release, s_writeback_req, s_writeback_resp, s_meta_write, s_meta_write_resp)
-  io.flsh_mshr_rdy := state.isOneOf(s_invalid, s_meta_write_resp)
+  io.flsh_mshr_rdy := state.isOneOf(s_invalid)
 
   io.lsu_release.valid := state === s_lsu_release
   io.lsu_release.bits  := edge.ProbeAck(req, report_param)
 
   // inform the flush unit to invalidate a probe from its queue after we have invalidated the cacheline
-  io.flsh_invalidate.valid := state === s_meta_write_resp
+  io.flsh_invalidate.valid := state =/= s_invalid
   io.flsh_invalidate.bits.idx := req_idx
   io.flsh_invalidate.bits.tag := req_tag
 
@@ -379,7 +379,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.meta_write.bits.idx := req.idx
   io.meta_write.bits.tag := req.tag
   io.meta_write.bits.data.tag := req.tag
-  io.meta_write.bits.data.coh := ClientMetadata.onReset
+  io.meta_write.bits.data.coh := Mux(req.dirty && req.is_wb, ClientMetadata.clean, ClientMetadata.onReset)
 
   io.data_req.valid := state === s_fill_buffer && !r2_data_req_fired
   io.data_req.bits.way_en := req.way_en
@@ -397,7 +397,7 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
     when (io.req.valid) {
       req := io.req.bits
       data_req_cnt := 0.U
-      state := Mux(io.req.bits.hit, Mux(io.req.bits.is_wb, Mux(io.req.bits.dirty, s_fill_buffer, s_root_release), s_meta_write), s_root_release) // do we have to invalidate this block?
+      state := Mux(io.req.bits.hit, Mux(io.req.bits.is_wb, Mux(io.req.bits.dirty, s_meta_write, s_root_release), s_meta_write), s_root_release) // do we have to invalidate this block?
     }
   } .elsewhen (state === s_meta_write) {
     when (io.meta_write.fire) {
@@ -455,7 +455,11 @@ class BoomFlushReqQueue(entries: Int) (implicit p: freechips.rocketchip.config.P
   })
 
   val queue = Module(new BranchKillableQueue(new FlushReq, entries, u => u.uses_ldq, false))
-  queue.io.enq <> io.enq
+  
+  io.enq.ready := queue.io.enq.ready && io.probe_flsh_rdy
+  queue.io.enq.valid := io.enq.valid && io.probe_flsh_rdy
+  queue.io.enq.bits := io.enq.bits
+
   io.deq.valid := queue.io.deq.valid && io.probe_flsh_rdy
   queue.io.deq.ready := io.deq.ready && io.probe_flsh_rdy
   io.deq.bits <> queue.io.deq.bits
@@ -523,8 +527,8 @@ class BoomFlushUnit(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule 
   val blockReadArb = Module(new Arbiter(new L1BlockReadReq, cfg.nFlshMSHRs))
   val tag_idx_match = Wire(Vec(memWidth, Bool()))
   val mshr_alloc_idx = Wire(UInt())
-  val flush_counter = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs +1).W))
-  val update_counter = WireInit(0.U(log2Ceil(cfg.nFlshMSHRs + 1).W))
+  val flush_counter = RegInit(0.U(log2Ceil(cfg.nFlshMSHRs + 33).W))
+  val update_counter = WireInit(0.U(log2Ceil(cfg.nFlshMSHRs + 33).W))
 
   io.root_release_ack.ready := false.B
 
@@ -1212,7 +1216,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   flsh.io.req.valid := s2_flush_valid
   flsh.io.req.bits(0).way_en := s2_tag_match_way(0)
   flsh.io.req.bits(0).hit := s2_hit(0)
-  flsh.io.req.bits(0).dirty := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._1 || ((s2_type === t_replay) && s2_replay_dirty)
+  flsh.io.req.bits(0).dirty := (s2_hit_state(0) === ClientStates.Dirty) || ((s2_type === t_replay) && s2_replay_dirty)
   flsh.io.req.bits(0).new_coh := s2_hit_state(0).onCacheControl(s2_req(0).uop.mem_cmd)._3
 
   // Miss handling
@@ -1328,6 +1332,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
   TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep, flsh.io.rep)
+
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
