@@ -970,7 +970,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       clr_bsy_brmask  (w) := GetNewBrMask(io.core.brupdate, mem_incoming_uop(w))
     } .elsewhen (fired_sta_retry(w)) {
       clr_bsy_valid   (w) := mem_stq_retry_e.valid            &&
-                             mem_stq_retry_e.bits.data.valid  &&
+                             (mem_stq_retry_e.bits.data.valid || mem_stq_retry_e.bits.uop.is_flush)  &&
                             !mem_tlb_miss(w)                  &&
                             !mem_stq_retry_e.bits.uop.is_amo  &&
                             !IsKilledByBranch(io.core.brupdate, mem_stq_retry_e.bits.uop)
