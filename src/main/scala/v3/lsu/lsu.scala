@@ -88,9 +88,6 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   // In our response stage, if we get a nack, we need to reexecute
   val nack        = Flipped(Vec(memWidth, new ValidIO(new BoomDCacheReq)))
 
-  // Does the dcache have any unacknowledged flushes?
-  val dcache_flushing   = Input(Bool())
-
   val brupdate       = Output(new BrUpdateInfo)
   val exception    = Output(Bool())
   val rob_pnr_idx  = Output(UInt(robAddrSz.W))
@@ -1503,7 +1500,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       io.dmem.force_order := true.B
       store_needs_order   := true.B
     }
-    clear_store := Mux(stq(stq_head).bits.uop.is_fence, io.dmem.ordered && !io.dmem.dcache_flushing,
+    clear_store := Mux(stq(stq_head).bits.uop.is_fence, io.dmem.ordered,
                                                         stq(stq_head).bits.succeeded) // only clear store if the dcache appears ordered and if we have no unacknowledged flushes
   }
 
