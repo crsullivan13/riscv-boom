@@ -374,6 +374,8 @@ class BoomFlushMSHR(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCach
   io.rep.valid := (state === s_root_release) || (state === s_root_release_data && (data_req_cnt < refillCycles.U))
   io.rep.bits := Mux(req.hit && req.dirty, Mux(req.is_wb, root_wb_data, root_release_data), Mux(req.is_wb, root_wb, root_release))
 
+  assert (!(state =/= s_invalid && req.dirty && !req.hit))
+
   io.meta_write.valid := state === s_meta_write
   io.meta_write.bits.way_en := req.way_en
   io.meta_write.bits.idx := req.idx
@@ -495,6 +497,7 @@ class BoomFlushReqQueue(entries: Int) (implicit p: freechips.rocketchip.config.P
       queue.io.buffer_overwrite_idx := i.U
       queue.io.buffer_overwrite.bits := queue.io.buffer(i).bits
       queue.io.buffer_overwrite.bits.hit := false.B
+      queue.io.buffer_overwrite.bits.dirty := false.B
     }
   }
 }
