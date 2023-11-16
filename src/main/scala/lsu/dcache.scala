@@ -15,6 +15,7 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tile._
 import freechips.rocketchip.util._
 import freechips.rocketchip.rocket._
+import freechips.rocketchip.subsystem.BwRegulator
 
 import boom.common._
 import boom.exu.BrUpdateInfo
@@ -409,6 +410,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
 class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p) {
   val errors = new DCacheErrors
   val lsu   = Flipped(new LSUDMemIO)
+  //val throttleWb = Bool(INPUT)
 }
 
 class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModuleImp(outer)
@@ -538,14 +540,14 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   wb_req(0).is_hella := false.B
   // Couple the two decoupled interfaces of the WBUnit's meta_read and data_read
   // Tag read for write-back
-  metaReadArb.io.in(2).valid        := wb.io.meta_read.valid
+  metaReadArb.io.in(2).valid        := wb.io.meta_read.valid //&& io.throttleWb
   metaReadArb.io.in(2).bits.req(0)  := wb.io.meta_read.bits
-  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
+  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready //&& io.throttleWb
   // Data read for write-back
-  dataReadArb.io.in(1).valid        := wb.io.data_req.valid
+  dataReadArb.io.in(1).valid        := wb.io.data_req.valid //&& io.throttleWb
   dataReadArb.io.in(1).bits.req(0)  := wb.io.data_req.bits
   dataReadArb.io.in(1).bits.valid   := widthMap(w => (w == 0).B)
-  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
+  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready //&& io.throttleWb
   assert(!(wb.io.meta_read.fire ^ wb.io.data_req.fire))
 
   // -------
