@@ -410,7 +410,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
 class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p) {
   val errors = new DCacheErrors
   val lsu   = Flipped(new LSUDMemIO)
-  //val throttleWb = Bool(INPUT)
+  // val throttleWb = Bool(INPUT)
 }
 
 class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModuleImp(outer)
@@ -819,7 +819,13 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   lsu_release_arb.io.in(0) <> wb.io.lsu_release
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
+  //bru wbThrottle
+  // val wbRelease = Wire(wb.io.release.cloneType)
+  // TLArbiter.lowest(edge, tl_out.c, prober.io.rep, wbRelease)
   TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
+  // wbRelease <> wb.io.release
+  // wbRelease.valid := wb.io.release.valid && io.ThrottleWb
+  // wb.io.release.ready := wbRelease.ready && io.ThrottleWb 
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)

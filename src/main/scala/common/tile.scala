@@ -236,7 +236,7 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
   lsu.io.hellacache <> hellaCacheArb.io.mem
   outer.dcache.module.io.lsu <> lsu.io.dmem
 
-  //outer.dcache.module.io.throttleWb := outer.nThrottleWbSinkNode.bundle
+  // outer.dcache.module.io.throttleWb := outer.nThrottleWbSinkNode.bundle
 
   // Generate a descriptive string
   val frontendStr = outer.frontend.module.toString
