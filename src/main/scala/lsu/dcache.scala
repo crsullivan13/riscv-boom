@@ -410,7 +410,8 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
 class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p) {
   val errors = new DCacheErrors
   val lsu   = Flipped(new LSUDMemIO)
-  // val throttleWb = Bool(INPUT)
+  //bru writeback throttle signal
+  val throttleWb = Input(Bool())
 }
 
 class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModuleImp(outer)
@@ -540,14 +541,14 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   wb_req(0).is_hella := false.B
   // Couple the two decoupled interfaces of the WBUnit's meta_read and data_read
   // Tag read for write-back
-  metaReadArb.io.in(2).valid        := wb.io.meta_read.valid //&& io.throttleWb
+  metaReadArb.io.in(2).valid        := wb.io.meta_read.valid
   metaReadArb.io.in(2).bits.req(0)  := wb.io.meta_read.bits
-  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready //&& io.throttleWb
+  wb.io.meta_read.ready := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
   // Data read for write-back
-  dataReadArb.io.in(1).valid        := wb.io.data_req.valid //&& io.throttleWb
+  dataReadArb.io.in(1).valid        := wb.io.data_req.valid
   dataReadArb.io.in(1).bits.req(0)  := wb.io.data_req.bits
   dataReadArb.io.in(1).bits.valid   := widthMap(w => (w == 0).B)
-  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready //&& io.throttleWb
+  wb.io.data_req.ready  := metaReadArb.io.in(2).ready && dataReadArb.io.in(1).ready
   assert(!(wb.io.meta_read.fire ^ wb.io.data_req.fire))
 
   // -------
@@ -820,12 +821,12 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
   //bru wbThrottle
-  // val wbRelease = Wire(wb.io.release.cloneType)
-  // TLArbiter.lowest(edge, tl_out.c, prober.io.rep, wbRelease)
-  TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
-  // wbRelease <> wb.io.release
-  // wbRelease.valid := wb.io.release.valid && io.ThrottleWb
-  // wb.io.release.ready := wbRelease.ready && io.ThrottleWb 
+  val wbRelease = Wire(wb.io.release.cloneType)
+  TLArbiter.lowest(edge, tl_out.c, wbRelease, prober.io.rep)
+  //TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
+  wbRelease <> wb.io.release
+  wbRelease.valid := wb.io.release.valid && io.throttleWb
+  wb.io.release.ready := wbRelease.ready && io.throttleWb 
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
