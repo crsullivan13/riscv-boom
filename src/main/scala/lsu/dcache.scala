@@ -16,6 +16,7 @@ import freechips.rocketchip.tile._
 import freechips.rocketchip.util._
 import freechips.rocketchip.rocket._
 import freechips.rocketchip.subsystem.BwRegulator
+import freechips.rocketchip.subsystem.HasTiles
 
 import boom.common._
 import boom.exu.BrUpdateInfo
@@ -400,6 +401,9 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
 
 
   lazy val module = new BoomNonBlockingDCacheModule(this)
+  
+  val bru: BwRegulator
+  val ioSink = bru.ioNode.makeSink()
 
   def flushOnFenceI = cfg.scratch.isEmpty && !node.edges.out(0).manager.managers.forall(m => !m.supportsAcquireT || !m.executable || m.regionType >= RegionType.TRACKED || m.regionType <= RegionType.IDEMPOTENT)
 
@@ -421,6 +425,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   implicit val edge = outer.node.edges.out(0)
   val (tl_out, _) = outer.node.out(0)
   val io = IO(new BoomDCacheBundle)
+
+  outer.ioSink.makeIO()
+  val sinkIO = outer.ioSink.bundle
 
   private val fifoManagers = edge.manager.managers.filter(TLFIFOFixer.allVolatile)
   fifoManagers.foreach { m =>
@@ -825,8 +832,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   TLArbiter.lowest(edge, tl_out.c, wbRelease, prober.io.rep)
   //TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
   wbRelease <> wb.io.release
-  wbRelease.valid := wb.io.release.valid && io.throttleWb
-  wb.io.release.ready := wbRelease.ready && io.throttleWb 
+  wbRelease.valid := wb.io.release.valid && sinkIO.nThrottleWb(staticIdForMetadataUseOnly)
+  wb.io.release.ready := wbRelease.ready && sinkIO.nThrottleWb(staticIdForMetadataUseOnly)
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
