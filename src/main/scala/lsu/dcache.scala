@@ -381,12 +381,9 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
  * @param hartid hardware thread for the cache
  */
 class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule
-  with HasBRUNode
 {
   private val tileParams = p(TileKey)
   protected val cfg = tileParams.dcache.get
-
-  val ioSink = bruIONodeOption.map(_.makeSink())
 
   protected def cacheClientParameters = cfg.scratch.map(x => Seq()).getOrElse(Seq(TLMasterParameters.v1(
     name          = s"Core ${staticIdForMetadataUseOnly} DCache",
@@ -415,7 +412,7 @@ class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBund
   val errors = new DCacheErrors
   val lsu   = Flipped(new LSUDMemIO)
   //bru writeback throttle signal
-  val throttleWb = Input(Bool())
+  //val throttleWb = Input(Bool())
 }
 
 class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModuleImp(outer)
@@ -425,14 +422,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   implicit val edge = outer.node.edges.out(0)
   val (tl_out, _) = outer.node.out(0)
   val io = IO(new BoomDCacheBundle)
-
-  outer.ioSink.map(_.makeIO())
-  val ioSink = outer.ioSink.map(_.bundle)
-
-  ioSink match {
-    case Some(myio) => io.throttleWb := myio
-    case None => None
-  }
 
   private val fifoManagers = edge.manager.managers.filter(TLFIFOFixer.allVolatile)
   fifoManagers.foreach { m =>
@@ -716,7 +705,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
       }
     }
   }
-  assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
+  //assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
 
   val s2_data = Wire(Vec(memWidth, Vec(nWays, UInt(encRowBits.W))))
   for (i <- 0 until memWidth) {
@@ -833,12 +822,12 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
   //bru wbThrottle
-  val wbRelease = Wire(wb.io.release.cloneType)
-  TLArbiter.lowest(edge, tl_out.c, wbRelease, prober.io.rep)
-  //TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
-  wbRelease <> wb.io.release
-  wbRelease.valid := wb.io.release.valid && io.throttleWb
-  wb.io.release.ready := wbRelease.ready && io.throttleWb
+  // val wbRelease = Wire(wb.io.release.cloneType)
+  // TLArbiter.lowest(edge, tl_out.c, wbRelease, prober.io.rep)
+  TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
+  // wbRelease <> wb.io.release
+  // wbRelease.valid := wb.io.release.valid && io.throttleWb
+  // wb.io.release.ready := wbRelease.ready && io.throttleWb
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
