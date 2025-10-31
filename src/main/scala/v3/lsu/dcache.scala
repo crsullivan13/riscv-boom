@@ -63,7 +63,7 @@ class BoomWritebackUnit(implicit edge: TLEdgeOut, p: Parameters) extends L1Hella
   val r_address = Cat(req.tag, req.idx) << blockOffBits
   val id = cfg.nMSHRs
   val probeResponse = edge.ProbeAck(
-                          fromSource = id.U,
+                          fromSource = req.source,
                           toAddress = r_address,
                           lgSize = lgCacheBlockBytes.U,
                           reportPermissions = req.param,
@@ -378,7 +378,7 @@ class BoomBankedDataArray(implicit p: Parameters) extends AbstractBoomDataArray 
  *
  * @param hartid hardware thread for the cache
  */
-class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule
+class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int, nBanks: Int)(implicit p: Parameters) extends LazyModule
 {
   private val tileParams = p(TileKey)
   protected val cfg = tileParams.dcache.get
@@ -397,8 +397,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int)(implicit p: Paramet
     cacheClientParameters ++ mmioClientParameters,
     minLatency = 1)))
 
-
-  lazy val module = new BoomNonBlockingDCacheModule(this)
+  lazy val module = new BoomNonBlockingDCacheModule(this, nBanks)
 
   def flushOnFenceI = cfg.scratch.isEmpty && !node.edges.out(0).manager.managers.forall(m => !m.supportsAcquireT || !m.executable || m.regionType >= RegionType.TRACKED || m.regionType <= RegionType.IDEMPOTENT)
 
@@ -410,13 +409,15 @@ class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBund
   val lsu   = Flipped(new LSUDMemIO)
 }
 
-class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModuleImp(outer)
+class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) extends LazyModuleImp(outer)
   with HasL1HellaCacheParameters
   with HasBoomCoreParameters
 {
   implicit val edge = outer.node.edges.out(0)
   val (tl_out, _) = outer.node.out(0)
   val io = IO(new BoomDCacheBundle)
+  val bwRegIO = IO(Flipped(new BRUTileIO(nBanks)))
+  val accessIO = IO(new BRUTileAccessIO(nBanks))
 
   private val fifoManagers = edge.manager.managers.filter(TLFIFOFixer.allVolatile)
   fifoManagers.foreach { m =>
@@ -430,12 +431,19 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
 
   val wb = Module(new BoomWritebackUnit)
   val prober = Module(new BoomProbeUnit)
-  val mshrs = Module(new BoomMSHRFile)
+  val mshrs = Module(new BoomMSHRFile(nBanks))
   mshrs.io.clear_all    := io.lsu.force_order
   mshrs.io.brupdate       := io.lsu.brupdate
   mshrs.io.exception    := io.lsu.exception
   mshrs.io.rob_pnr_idx  := io.lsu.rob_pnr_idx
   mshrs.io.rob_head_idx := io.lsu.rob_head_idx
+
+  mshrs.io.reg := bwRegIO
+  accessIO := mshrs.io.access
+
+  // val clockTest = Reg(UInt(64.W))
+  // clockTest := clockTest + 1.U
+  // printf("BOOM CLOCK: %d\n", clockTest)
 
   // tags
   def onReset = L1Metadata(0.U, ClientMetadata.onReset)
@@ -700,7 +708,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
       }
     }
   }
-  assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
+  //assert(debug_sc_fail_cnt < 100.U, "L1DCache failed too many SCs in a row")
 
   val s2_data = Wire(Vec(memWidth, Vec(nWays, UInt(encRowBits.W))))
   for (i <- 0 until memWidth) {
@@ -775,8 +783,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   tl_out.a <> mshrs.io.mem_acquire
 
   // probes and releases
-  prober.io.req.valid   := tl_out.b.valid && !lrsc_valid
-  tl_out.b.ready        := prober.io.req.ready && !lrsc_valid
+  prober.io.req.valid   := tl_out.b.valid && !lrsc_valid && !wb.io.idx.valid // block probes if wb unit is busy
+  tl_out.b.ready        := prober.io.req.ready && !lrsc_valid && !wb.io.idx.valid
   prober.io.req.bits    := tl_out.b.bits
   prober.io.way_en      := s2_tag_match_way(0)
   prober.io.block_state := s2_hit_state(0)

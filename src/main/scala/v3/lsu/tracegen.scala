@@ -215,10 +215,13 @@ class BoomTraceGenTile private(
   val slaveNode: TLInwardNode = TLIdentityNode()
   val statusNode = BundleBridgeSource(() => new GroundTestStatus)
 
+  override val bwRegNode = None
+  override val accessNode = None
+
   val boom_params = p.alterMap(Map(TileKey -> BoomTileParams(
     dcache=params.dcache,
     core=BoomCoreParams(nPMPs=0, numLdqEntries=16, numStqEntries=16, useVM=false))))
-  val dcache = LazyModule(new BoomNonBlockingDCache(tileId)(boom_params))
+  val dcache = LazyModule(new BoomNonBlockingDCache(tileId, p(SubsystemBankedCoherenceKey).nBanks)(boom_params))
 
 
   val masterNode: TLOutwardNode = TLIdentityNode() := visibilityNode := dcache.node

@@ -818,8 +818,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   tl_out.a <> mshrs.io.mem_acquire
 
   // probes and releases
-  prober.io.req.valid   := tl_out.b.valid && !lrsc_valid
-  tl_out.b.ready        := prober.io.req.ready && !lrsc_valid
+  prober.io.req.valid   := tl_out.b.valid && !lrsc_valid //&& !wb.io.idx.valid
+  tl_out.b.ready        := prober.io.req.ready && !lrsc_valid //&& !wb.io.idx.valid
   prober.io.req.bits    := tl_out.b.bits
   prober.io.way_en      := s2_tag_match_way(0)
   prober.io.block_state := s2_hit_state(0)
