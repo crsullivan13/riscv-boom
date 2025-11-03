@@ -555,7 +555,7 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
     val resp = Decoupled(new BoomDCacheResp)
     val secondary_miss = Output(Vec(memWidth, Bool()))
     val block_hit = Output(Vec(memWidth, Bool()))
-    val flush_safe = Output(Vec(memWidth, Bool())) // incoming flush request may safely flush
+    //val flush_safe = Output(Vec(memWidth, Bool())) // incoming flush request may safely flush
 
     val brupdate       = Input(new BrUpdateInfo)
     val exception    = Input(Bool())

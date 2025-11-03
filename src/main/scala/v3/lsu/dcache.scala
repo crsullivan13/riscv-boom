@@ -441,7 +441,7 @@ class FlushReq(implicit p: Parameters) extends BoomBundle()(p) with HasBoomUOP w
   val new_coh = new ClientMetadata
 }
 
-class BoomFlushReqQueue(entries: Int) (implicit p: freechips.rocketchip.config.Parameters) extends BoomModule with HasL1HellaCacheParameters {
+class BoomFlushReqQueue(entries: Int) (implicit p: Parameters) extends BoomModule with HasL1HellaCacheParameters {
   val io = IO(new Bundle {
     val enq     = Flipped(Decoupled(new FlushReq))
     val deq     = Decoupled(new FlushReq)
