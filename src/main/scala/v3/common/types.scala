@@ -20,3 +20,10 @@ abstract class BoomModule(implicit p: Parameters) extends freechips.rocketchip.t
  */
 class BoomBundle(implicit val p: Parameters) extends freechips.rocketchip.util.ParameterizedBundle
   with HasBoomCoreParameters
+
+// lets go with 6 bits for now. this is half of the size of each register field
+class CBQRIBundle(implicit p: Parameters) extends BoomBundle()(p)
+{
+  val rcid = UInt(6.W)
+  val mcid = UInt(6.W)
+}

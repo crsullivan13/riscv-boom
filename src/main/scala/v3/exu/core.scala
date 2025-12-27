@@ -61,6 +61,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     val ptw_tlb = new freechips.rocketchip.rocket.TLBPTWIO()
     val trace = Output(new TraceBundle)
     val fcsr_rm = UInt(freechips.rocketchip.tile.FPConstants.RM_SZ.W)
+    val cbqri = Output(new CBQRIBundle)
   })
 
   io.ptw_tlb := DontCare
@@ -272,6 +273,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
   csr.io.mhtinst_read_pseudo := false.B
+
+  io.cbqri.rcid := csr.io.srmcfg(5,0)
+  io.cbqri.mcid := csr.io.srmcfg(21,16)
 
   val custom_csrs = Wire(new BoomCustomCSRs)
   custom_csrs.csrs.foreach { c => c.stall := false.B; c.set := false.B; c.sdata := DontCare }

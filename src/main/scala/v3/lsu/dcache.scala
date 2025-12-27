@@ -407,6 +407,7 @@ class BoomNonBlockingDCache(staticIdForMetadataUseOnly: Int, nBanks: Int)(implic
 
 class BoomDCacheBundle(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p) {
   val lsu   = Flipped(new LSUDMemIO)
+  val cbqri = Input(new CBQRIBundle)
 }
 
 class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) extends LazyModuleImp(outer)
