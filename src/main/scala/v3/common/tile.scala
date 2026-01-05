@@ -86,8 +86,11 @@ class BoomTile private(
   val masterNode = TLIdentityNode()
   val slaveNode = TLIdentityNode()
 
-  val bwRegNode = Some(BundleBridgeSink[BRUTileIO](Some(() => Flipped(new BRUTileIO(2)))))
-  val accessNode = Some(BundleBridgeSource(() => new BRUTileAccessIO(2)))
+  val bwRegNode = p(BRUKey).map { _ =>
+    BundleBridgeSink[BRUTileIO](Some(() => Flipped(new BRUTileIO(p(SubsystemBankedCoherenceKey).nBanks))))
+  }
+
+  val accessNode = None
 
   val tile_master_blocker =
     tileParams.blockerCtrlAddr
@@ -132,7 +135,7 @@ class BoomTile private(
   override lazy val module = new BoomTileModuleImp(this)
 
   // DCache
-  lazy val dcache: BoomNonBlockingDCache = LazyModule(new BoomNonBlockingDCache(tileId, 2))
+  lazy val dcache: BoomNonBlockingDCache = LazyModule(new BoomNonBlockingDCache(tileId, p(SubsystemBankedCoherenceKey).nBanks))
   val dCacheTap = TLIdentityNode()
   tlMasterXbar.node := dCacheTap := TLWidthWidget(tileParams.dcache.get.rowBits/8) := visibilityNode := dcache.node
 
@@ -175,8 +178,9 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
   outer.bpwatchSourceNode.bundle <> DontCare // core.io.bpwatch
   core.io.hartid := outer.hartIdSinkNode.bundle
 
-  outer.dcache.module.bwRegIO := outer.bwRegNode.get.bundle
-  outer.accessNode.get.bundle := outer.dcache.module.accessIO
+  private val bwRegIO = WireDefault(0.U.asTypeOf(new BRUTileIO(outer.p(SubsystemBankedCoherenceKey).nBanks)))
+  outer.bwRegNode.foreach { node => bwRegIO := node.bundle }
+  outer.dcache.module.bwRegIO := bwRegIO
 
   // Connect the core pipeline to other intra-tile modules
   outer.frontend.module.io.cpu <> core.io.ifu
