@@ -35,7 +35,7 @@ class BoomDCacheReqInternal(implicit p: Parameters) extends BoomDCacheReq()(p)
 }
 
 
-class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
+class BoomMSHR()(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   with HasL1HellaCacheParameters
 {
   val io = IO(new Bundle {
@@ -93,8 +93,6 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
     val wb_resp     = Input(Bool())
 
     val probe_rdy   = Output(Bool())
-
-    val reg = Flipped(new BRUTileIO(nBanks))
   })
 
   // TODO: Optimize this. We don't want to mess with cache during speculation
@@ -216,9 +214,6 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
     new_state
   }
 
-  val nBankBits = log2Ceil(nBanks)
-  val cacheLineBits = 6
-
   when (state === s_invalid) {
     io.req_pri_rdy := true.B
     grant_had_data := false.B
@@ -227,7 +222,7 @@ class BoomMSHR(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends Boo
       state := handle_pri_req(state)
     }
   } .elsewhen (state === s_refill_req) {
-    io.mem_acquire.valid := true.B && !io.reg.nThrottle(req.addr(cacheLineBits + nBankBits-1,cacheLineBits))
+    io.mem_acquire.valid := true.B
 
     // TODO: Use AcquirePerm if just doing permissions acquire
     io.mem_acquire.bits  := edge.AcquireBlock(
@@ -528,7 +523,7 @@ class LineBufferMeta(implicit p: Parameters) extends BoomBundle()(p)
   val addr = UInt(coreMaxAddrBits.W)
 }
 
-class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
+class BoomMSHRFile()(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   with HasL1HellaCacheParameters
 {
   val io = IO(new Bundle {
@@ -563,9 +558,6 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
 
     val fence_rdy = Output(Bool())
     val probe_rdy = Output(Bool())
-
-    val reg = Flipped(new BRUTileIO(nBanks))
-    val access = new BRUTileAccessIO(nBanks)
   })
 
   val req_idx = OHToUInt(io.req.map(_.valid))
@@ -650,7 +642,7 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
   val pri_rdy = WireInit(false.B)
   val pri_val = req.valid && sdq_rdy && cacheable && !idx_match(req_idx)
   val mshrs = (0 until cfg.nMSHRs) map { i =>
-    val mshr = Module(new BoomMSHR(nBanks))
+    val mshr = Module(new BoomMSHR())
     mshr.io.id := i.U(log2Ceil(cfg.nMSHRs).W)
 
     for (w <- 0 until memWidth) {
@@ -719,10 +711,6 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
       }
     }
 
-    // connect bwreg vec to each mshr
-    mshr.io.reg := io.reg
-    //io.access := mshr.io.access
-
     mshr
   }
 
@@ -730,8 +718,6 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
   val mshr_head      = RegInit(0.U(log2Ceil(cfg.nMSHRs).W))
   mshr_alloc_idx    := RegNext(AgePriorityEncoder(mshrs.map(m=>m.io.req_pri_rdy), mshr_head))
   when (pri_rdy && pri_val) { mshr_head := WrapInc(mshr_head, cfg.nMSHRs) }
-
-
 
   io.meta_write <> meta_write_arb.io.out
   io.meta_read  <> meta_read_arb.io.out
@@ -768,31 +754,8 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
 
   mmio_alloc_arb.io.out.ready := req.valid && !cacheable
 
-  val nBankBits = log2Ceil(nBanks)
-  val cacheLineBits = 6
-
-  io.access.bank := nBanks.U
-  io.access.didFire := false.B
-  when ( io.mem_acquire.fire ) {
-    io.access.bank := io.mem_acquire.bits.address(cacheLineBits + nBankBits-1,cacheLineBits)
-    io.access.didFire := true.B
-  }
-
   TLArbiter.lowestFromSeq(edge, io.mem_acquire, mshrs.map(_.io.mem_acquire) ++ mmios.map(_.io.mem_access))
   TLArbiter.lowestFromSeq(edge, io.mem_finish,  mshrs.map(_.io.mem_finish))
-
-  // val myFlag = RegInit(false.B)
-  // when(io.mem_acquire.valid && io.reg.nThrottle.reduce(_||_) && !myFlag) {
-  //   val bank = io.mem_acquire.bits.address(6)
-  //   val isOtherBank = PopCount(mshrs.map( mshr => (mshr.io.mem_acquire.bits.address(6) =/= bank) && mshr.io.mem_acquire.valid ))
-  //   SynthesizePrintf(printf("Throttled %x, bank %x, other-bank %x\n", io.mem_acquire.bits.source, bank, isOtherBank))
-  //   myFlag := true.B
-  // } .elsewhen (!io.reg.nThrottle.reduce(_||_) && myFlag) {
-  //   myFlag := false.B
-  // }
-  //print out which LLC bank the access is going to
-  // print out if there is an access that could go to another bank
-  // have a flag to only print this out once per reg going high
 
   val respq = Module(new BranchKillableQueue(new BoomDCacheResp, 4, u => u.uses_ldq, flow = false))
   respq.io.brupdate := io.brupdate

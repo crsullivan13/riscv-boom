@@ -418,7 +418,6 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val (tl_out, _) = outer.node.out(0)
   val io = IO(new BoomDCacheBundle)
   val bwRegIO = IO(Flipped(new BRUTileIO(nBanks)))
-  val accessIO = IO(new BRUTileAccessIO(nBanks))
 
   private val fifoManagers = edge.manager.managers.filter(TLFIFOFixer.allVolatile)
   fifoManagers.foreach { m =>
@@ -432,15 +431,12 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
 
   val wb = Module(new BoomWritebackUnit)
   val prober = Module(new BoomProbeUnit)
-  val mshrs = Module(new BoomMSHRFile(nBanks))
+  val mshrs = Module(new BoomMSHRFile)
   mshrs.io.clear_all    := io.lsu.force_order
   mshrs.io.brupdate       := io.lsu.brupdate
   mshrs.io.exception    := io.lsu.exception
   mshrs.io.rob_pnr_idx  := io.lsu.rob_pnr_idx
   mshrs.io.rob_head_idx := io.lsu.rob_head_idx
-
-  mshrs.io.reg := bwRegIO
-  accessIO := mshrs.io.access
 
   // val clockTest = Reg(UInt(64.W))
   // clockTest := clockTest + 1.U
@@ -825,7 +821,14 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   lsu_release_arb.io.in(0) <> wb.io.lsu_release
   lsu_release_arb.io.in(1) <> prober.io.lsu_release
 
-  TLArbiter.lowest(edge, tl_out.c, wb.io.release, prober.io.rep)
+  val nBankBits = log2Ceil(nBanks)
+  val cacheLineBits = 6
+
+  val releaseWire = Wire(Decoupled(new TLBundleC(edge.bundle)))
+  releaseWire <> wb.io.release
+  wb.io.release.ready := releaseWire.ready && !bwRegIO.nThrottle(wb.io.release.bits.address(cacheLineBits + nBankBits-1, cacheLineBits))
+  releaseWire.valid := wb.io.release.valid && !bwRegIO.nThrottle(wb.io.release.bits.address(cacheLineBits + nBankBits-1, cacheLineBits))
+  TLArbiter.lowest(edge, tl_out.c, releaseWire, prober.io.rep)
 
   io.lsu.perf.release := edge.done(tl_out.c)
   io.lsu.perf.acquire := edge.done(tl_out.a)
