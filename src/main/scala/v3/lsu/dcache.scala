@@ -777,9 +777,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   mshrs.io.meta_resp.valid      := !s2_nack_hit(0) || prober.io.mshr_wb_rdy
   mshrs.io.meta_resp.bits       := Mux1H(s2_tag_match_way(0), RegNext(meta(0).io.resp))
   when (mshrs.io.req.map(_.fire).reduce(_||_)) { replacer.miss }
+  tl_out.a <> mshrs.io.mem_acquire
   tl_out.a.bits.rcid := io.cbqri.rcid
   tl_out.a.bits.mcid := io.cbqri.mcid
-  tl_out.a <> mshrs.io.mem_acquire
 
   // probes and releases
   prober.io.req.valid   := tl_out.b.valid && !lrsc_valid && !wb.io.idx.valid // block probes if wb unit is busy
