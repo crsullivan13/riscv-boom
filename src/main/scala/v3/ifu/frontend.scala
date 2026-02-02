@@ -311,6 +311,7 @@ class BoomFrontendBundle(val outer: BoomFrontend) extends CoreBundle()(outer.p)
 {
   val cpu = Flipped(new BoomFrontendIO())
   val ptw = new TLBPTWIO()
+  val cbqri = Input(new CBQRIBundle)
 }
 
 /**
@@ -334,6 +335,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
 
   val icache = outer.icache.module
   icache.io.invalidate := io.cpu.flush_icache
+  icache.io.cbqri := io.cbqri
   val tlb = Module(new TLB(true, log2Ceil(fetchBytes), TLBConfig(nTLBSets, nTLBWays)))
   io.ptw <> tlb.io.ptw
   io.cpu.perf.tlbMiss := io.ptw.req.fire

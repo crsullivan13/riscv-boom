@@ -82,6 +82,8 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
   val perf = Output(new Bundle {
     val acquire = Bool()
   })
+
+  val cbqri = Input(new CBQRIBundle)
 }
 
 /**
@@ -328,6 +330,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     fromSource = 0.U,
     toAddress = (refill_paddr >> blockOffBits) << blockOffBits,
     lgSize = lgCacheBlockBytes.U)._2
+  tl_out.a.bits.rcid := io.cbqri.rcid
+  tl_out.a.bits.mcid := io.cbqri.mcid
   tl_out.b.ready := true.B
   tl_out.c.valid := false.B
   tl_out.e.valid := false.B
