@@ -154,7 +154,7 @@ class WithNMediumBoomsLargeFetchBuffer(n: Int = 1, overrideIdOffset: Option[Int]
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
-              DCacheParams(rowBits = 128, nSets=64, nWays=4, nMSHRs=6, nTLBWays=8)
+              DCacheParams(rowBits = 128, nSets=64, nWays=8, nMSHRs=6, nTLBWays=8)
             ),
             icache = Some(
               ICacheParams(rowBits = 128, nSets=64, nWays=8, fetchBytes=4*4)
