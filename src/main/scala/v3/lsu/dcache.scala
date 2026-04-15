@@ -816,7 +816,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   val (tl_out, _) = outer.node.out(0)
   val io = IO(new BoomDCacheBundle)
   val bwRegIO = IO(Flipped(new BRUTileIO(nBanks)))
-  val accessIO = IO(new BRUTileAccessIO(nBanks))
+  // val accessIO = IO(new BRUTileAccessIO(nBanks))
 
   private val fifoManagers = edge.manager.managers.filter(TLFIFOFixer.allVolatile)
   fifoManagers.foreach { m =>
@@ -845,7 +845,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache, nBanks: Int) ext
   mshrs.io.rob_head_idx := io.lsu.rob_head_idx
 
   mshrs.io.reg := bwRegIO
-  accessIO := mshrs.io.access
+  // accessIO := mshrs.io.access
 
   // val clockTest = Reg(UInt(64.W))
   // clockTest := clockTest + 1.U

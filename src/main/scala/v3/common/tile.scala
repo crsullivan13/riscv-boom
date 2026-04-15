@@ -87,7 +87,7 @@ class BoomTile private(
   val slaveNode = TLIdentityNode()
 
   val bwRegNode = Some(BundleBridgeSink[BRUTileIO](Some(() => Flipped(new BRUTileIO(2)))))
-  val accessNode = Some(BundleBridgeSource(() => new BRUTileAccessIO(2)))
+  val accessNode = None
 
   val tile_master_blocker =
     tileParams.blockerCtrlAddr
@@ -170,13 +170,13 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
 
   outer.decodeCoreInterrupts(core.io.interrupts) // Decode the interrupt vector
 
-  // Pass through various external constants and reports
+  // Pass through various external constants and reports..
   outer.traceSourceNode.bundle <> core.io.trace
   outer.bpwatchSourceNode.bundle <> DontCare // core.io.bpwatch
   core.io.hartid := outer.hartIdSinkNode.bundle
 
   outer.dcache.module.bwRegIO := outer.bwRegNode.get.bundle
-  outer.accessNode.get.bundle := outer.dcache.module.accessIO
+  // outer.accessNode.get.bundle := outer.dcache.module.accessIO
 
   // Connect the core pipeline to other intra-tile modules
   outer.frontend.module.io.cpu <> core.io.ifu

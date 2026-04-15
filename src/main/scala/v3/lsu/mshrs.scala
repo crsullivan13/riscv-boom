@@ -584,7 +584,7 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
     val probe_rdy = Output(Bool())
 
     val reg = Flipped(new BRUTileIO(nBanks))
-    val access = new BRUTileAccessIO(nBanks)
+    // val access = new BRUTileAccessIO(nBanks)
   })
 
   val req_idx = OHToUInt(io.req.map(_.valid))
@@ -795,12 +795,12 @@ class BoomMSHRFile(nBanks: Int)(implicit edge: TLEdgeOut, p: Parameters) extends
   val nBankBits = log2Ceil(nBanks)
   val cacheLineBits = 6
 
-  io.access.bank := nBanks.U
-  io.access.didFire := false.B
-  when ( io.mem_acquire.fire ) {
-    io.access.bank := io.mem_acquire.bits.address(cacheLineBits + nBankBits-1,cacheLineBits)
-    io.access.didFire := true.B
-  }
+  // io.access.bank := nBanks.U
+  // io.access.didFire := false.B
+  // when ( io.mem_acquire.fire ) {
+  //   io.access.bank := io.mem_acquire.bits.address(cacheLineBits + nBankBits-1,cacheLineBits)
+  //   io.access.didFire := true.B
+  // }
 
   TLArbiter.lowestFromSeq(edge, io.mem_acquire, mshrs.map(_.io.mem_acquire) ++ mmios.map(_.io.mem_access))
   TLArbiter.lowestFromSeq(edge, io.mem_finish,  mshrs.map(_.io.mem_finish))
