@@ -86,10 +86,7 @@ class BoomTile private(
   val masterNode = TLIdentityNode()
   val slaveNode = TLIdentityNode()
 
-  val bwRegNode = p(BRUKey).map { _ =>
-    BundleBridgeSink[BRUTileIO](Some(() => Flipped(new BRUTileIO(p(SubsystemBankedCoherenceKey).nBanks))))
-  }
-
+  val bwRegNode = None
   val accessNode = None
 
   val tile_master_blocker =
@@ -178,9 +175,9 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
   outer.bpwatchSourceNode.bundle <> DontCare // core.io.bpwatch
   core.io.hartid := outer.hartIdSinkNode.bundle
 
-  private val bwRegIO = WireDefault(0.U.asTypeOf(new BRUTileIO(outer.p(SubsystemBankedCoherenceKey).nBanks)))
-  outer.bwRegNode.foreach { node => bwRegIO := node.bundle }
-  outer.dcache.module.bwRegIO := bwRegIO
+  // private val bwRegIO = WireDefault(0.U.asTypeOf(new BRUTileIO(outer.p(SubsystemBankedCoherenceKey).nBanks)))
+  // outer.bwRegNode.foreach { node => bwRegIO := node.bundle }
+  // outer.dcache.module.bwRegIO := bwRegIO
 
   // Connect the core pipeline to other intra-tile modules
   outer.frontend.module.io.cpu <> core.io.ifu
