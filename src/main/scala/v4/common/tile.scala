@@ -88,8 +88,6 @@ class BoomTile private(
 
   val bwRegNode = None
   val accessNode = None
-  // val bwRegNode = Some(BundleBridgeSink[BRUTileIO](Some(() => Flipped(new BRUTileIO(p(SubsystemBankedCoherenceKey).nBanks)))))
-  // val accessNode = Some(BundleBridgeSource(() => new BRUTileAccessIO(p(SubsystemBankedCoherenceKey).nBanks)))
 
   val tile_master_blocker =
     tileParams.blockerCtrlAddr
