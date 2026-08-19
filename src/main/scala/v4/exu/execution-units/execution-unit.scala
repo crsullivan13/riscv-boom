@@ -23,7 +23,6 @@ import chisel3.util._
 import freechips.rocketchip.rocket.{BP, SFenceReq, CSR}
 import freechips.rocketchip.rocket.constants.{MemoryOpConstants}
 import org.chipsalliance.cde.config.{Parameters}
-import freechips.rocketchip.tile.{XLen, RoCCCoreIO}
 import freechips.rocketchip.tile
 import freechips.rocketchip.util._
 
@@ -98,7 +97,7 @@ abstract class ExecutionUnit(name: String)(implicit p: Parameters) extends BoomM
   rrd_uop.bits  := UpdateBrMask(io_brupdate, arb_uop.bits)
   val exe_uop = Reg(Valid(new MicroOp))
   exe_uop.valid := rrd_uop.valid && !IsKilledByBranch(io_brupdate, io_kill, rrd_uop.bits)
-  exe_uop.bits  := UpdateBrMask(io_brupdate, RRDDecode(rrd_uop.bits))
+  exe_uop.bits  := UpdateBrMask(io_brupdate, rrd_uop.bits)
 }
 
 trait HasIrfReadPorts { this: ExecutionUnit =>
@@ -242,11 +241,11 @@ trait HasFtqReadPort { this: ExecutionUnit =>
   val io_rrd_ftq_resps = IO(Vec(2, Input(new FTQInfo)))
 
   // Only allow one SFB branch through multiple pipes, to avoid unnecessary predicate wakeup logic
-  io_arb_ftq_reqs(0).valid := arb_uop.valid && (arb_uop.bits.uopc.isOneOf(uopAUIPC, uopJAL, uopJALR) || arb_uop.bits.is_sfb_br)
+  io_arb_ftq_reqs(0).valid := arb_uop.valid && (arb_uop.bits.op1_sel === OP1_PC || arb_uop.bits.is_sfb_br)
   io_arb_ftq_reqs(0).bits  := arb_uop.bits.ftq_idx
 
   // Only JALR checks the next-pc
-  io_arb_ftq_reqs(1).valid := arb_uop.valid && (arb_uop.bits.uopc.isOneOf(                  uopJALR) || arb_uop.bits.is_sfb_br)
+  io_arb_ftq_reqs(1).valid := arb_uop.valid && (arb_uop.bits.br_type === B_JR || arb_uop.bits.is_sfb_br)
   io_arb_ftq_reqs(1).bits  := WrapInc(arb_uop.bits.ftq_idx, ftqSz)
 
   val exe_ftq_data = Reg(Vec(2, new FTQInfo))
@@ -397,7 +396,7 @@ class UniqueExeUnit(
     c.bits.addr := RegNext(exe_imm_data)
 
     val s = IO(Valid(new SFenceReq))
-    s.valid    := RegNext(exe_uop.valid && exe_uop.bits.uopc === uopSFENCE)
+    s.valid    := RegNext(exe_uop.valid && exe_uop.bits.is_sfence)
     s.bits.rs1 := RegNext(exe_uop.bits.pimm(0))
     s.bits.rs2 := RegNext(exe_uop.bits.pimm(1))
     s.bits.addr := RegNext(exe_rs1_data)
@@ -408,7 +407,7 @@ class UniqueExeUnit(
     (Some(c), Some(s))
   } else {
     assert(!(exe_uop.valid && exe_uop.bits.fu_code(FC_CSR)))
-    assert(!(exe_uop.valid && exe_uop.bits.uopc === uopSFENCE))
+    assert(!(exe_uop.valid && exe_uop.bits.mem_cmd === M_SFENCE))
     (None, None)
   }
 
@@ -642,8 +641,6 @@ class FPExeUnit(val hasFDiv: Boolean = false, val hasFpiu: Boolean = false)(impl
     assert(!(fdivsqrt.io.req.valid && !fdivsqrt.io.req.ready))
     fdivsqrt.io.req.valid := exe_uop.valid && exe_uop.bits.fu_code(FC_FDV)
     fdivsqrt.io.req.bits := exe_fp_req
-    fdivsqrt.io.req.bits.uop.fp_rm  := exe_uop.bits.prs2(4,2)
-    fdivsqrt.io.req.bits.uop.fp_typ := exe_uop.bits.prs2(1,0)
     fdivsqrt.io.brupdate := io_brupdate
     fdivsqrt.io.kill     := io_kill
     fdivsqrt.io.fcsr_rm  := io_fcsr_rm

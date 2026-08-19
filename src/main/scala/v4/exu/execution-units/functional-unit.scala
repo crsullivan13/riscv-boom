@@ -24,6 +24,7 @@ import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.util._
 import freechips.rocketchip.tile
 import freechips.rocketchip.rocket.{PipelinedMultiplier,BP,BreakpointUnit,Causes,CSR}
+import freechips.rocketchip.rocket.ALU._
 
 import boom.v4.common._
 import boom.v4.ifu._
@@ -51,8 +52,8 @@ class FuncUnitReq(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 
 class BrInfoBundle(implicit p: Parameters) extends BoomBundle
 {
-  val ldq_idx = UInt(ldqAddrSz.W)
-  val stq_idx = UInt(stqAddrSz.W)
+  val ldq_idx = UInt((1+ldqAddrSz).W)
+  val stq_idx = UInt((1+stqAddrSz).W)
   val rxq_idx = UInt(log2Ceil(numRxqEntries).W)
 }
 
@@ -143,29 +144,38 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
   val imm_xprlen = io.req.bits.imm_data //ImmGen(uop.imm_packed, uop.imm_sel)
 
   // operand 1 select
-  var op1_data: UInt = null
 
   // Get the uop PC for jumps
   val block_pc = AlignPCToBoundary(io.req.bits.ftq_info(0).pc, icBlockBytes)
   val uop_pc = (block_pc | uop.pc_lob) - Mux(uop.edge_inst, 2.U, 0.U)
+  val op1_shamt = Mux(uop.fcn_op === FN_ADD, io.req.bits.uop.pimm(2,1), 0.U)
+  val op1_shl = Mux(uop.fcn_dw === DW_32, // shaddw
+    io.req.bits.rs1_data(31,0), io.req.bits.rs1_data) << op1_shamt
 
-  op1_data = Mux(uop.op1_sel === OP1_RS1 , io.req.bits.rs1_data,
-             Mux(uop.op1_sel === OP1_PC  , Sext(uop_pc, xLen),
-                                           0.U))
+  val op1_data = MuxLookup(uop.op1_sel, 0.U)(Seq(
+    OP1_RS1    -> io.req.bits.rs1_data,
+    OP1_PC     -> Sext(uop_pc, xLen),
+    OP1_RS1SHL  -> op1_shl
+  ))
 
   // operand 2 select
-  val op2_data = Mux(uop.op2_sel === OP2_IMM,  Sext(imm_xprlen, xLen),
-                 Mux(uop.op2_sel === OP2_IMMC, io.req.bits.uop.prs1(4,0),
-                 Mux(uop.op2_sel === OP2_RS2 , io.req.bits.rs2_data,
-                 Mux(uop.op2_sel === OP2_NEXT, Mux(uop.is_rvc, 2.U, 4.U),
-                                               0.U))))
+  val op2_oh = UIntToOH(Mux(uop.op2_sel(0), // rs1
+    io.req.bits.rs2_data, imm_xprlen)(log2Ceil(xLen)-1,0))
+  val op2_data = MuxLookup(uop.op2_sel, 0.U)(Seq(
+    OP2_IMM  -> Sext(imm_xprlen, xLen),
+    OP2_IMMC -> io.req.bits.uop.prs1(4,0),
+    OP2_RS2  -> io.req.bits.rs2_data,
+    OP2_NEXT -> Mux(uop.is_rvc, 2.U, 4.U),
+    OP2_RS2OH -> op2_oh,
+    OP2_IMMOH -> op2_oh
+  ))
 
   val alu = Module(new freechips.rocketchip.rocket.ALU())
 
   alu.io.in1 := op1_data.asUInt
   alu.io.in2 := op2_data.asUInt
   alu.io.fn  := uop.fcn_op
-  alu.io.dw  := uop.fcn_dw
+  alu.io.dw  := Mux(uop.op1_sel === OP1_RS1SHL, DW_64, uop.fcn_dw)
 
 
   val rs1 = io.req.bits.rs1_data
@@ -188,7 +198,7 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
                         ))
 
   val is_taken = io.req.valid &&
-                   (uop.br_type =/= BR_N) &&
+                   (uop.br_type =/= B_N) &&
                    (pc_sel =/= PC_PLUS4)
 
 
@@ -274,7 +284,7 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
 //   io.resp.bits.data := reg_data
   val alu_out = Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
       Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
-      Mux(io.req.bits.uop.uopc === uopMOV, io.req.bits.rs2_data, alu.io.out))
+      Mux(io.req.bits.uop.is_mov, io.req.bits.rs2_data, alu.io.out))
   io.resp.valid := io.req.valid
   io.resp.bits.uop := io.req.bits.uop
   io.resp.bits.data := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
@@ -333,15 +343,14 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
     needsFcsr = true)
   with tile.HasFPUParameters
 {
+  val io_req = io.req.bits
+
   io.req.ready := true.B
   val pipe = Module(new BranchKillablePipeline(new FuncUnitReq(dataWidth), latency))
   pipe.io.req := io.req
   pipe.io.flush := io.kill
   pipe.io.brupdate := io.brupdate
-  val fp_decoder = Module(new UOPCodeFPUDecoder) // TODO use a simpler decoder
-  val io_req = io.req.bits
-  fp_decoder.io.uopc := io_req.uop.uopc
-  val fp_ctrl = fp_decoder.io.sigs
+  val fp_ctrl = io_req.uop.fp_ctrl
   val fp_rm = Mux(io_req.uop.fp_rm === 7.U, io.fcsr_rm, io_req.uop.fp_rm)
 
   val req = Wire(new tile.FPInput)

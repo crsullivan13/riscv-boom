@@ -157,8 +157,6 @@ class BoomTile private(
  */
 class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
 
-  Annotated.params(this, outer.boomParams)
-
   val core = Module(new BoomCore()(outer.p))
   val lsu  = Module(new LSU()(outer.p, outer.dcache.module.edge))
 

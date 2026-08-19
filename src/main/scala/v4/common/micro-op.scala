@@ -26,7 +26,6 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
   with freechips.rocketchip.rocket.constants.ScalarOpConstants
 {
-  val uopc             = UInt(UOPC_SZ.W)       // micro-op code
   val inst             = UInt(32.W)
   val debug_inst       = UInt(32.W)
   val is_rvc           = Bool()
@@ -56,11 +55,12 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val is_sfb           = Bool()                      // is this a sfb or in the shadow of a sfb
   val is_fence         = Bool()
   val is_fencei        = Bool()
+  val is_sfence        = Bool()
   val is_amo           = Bool()
   val is_eret          = Bool()
   val is_sys_pc2epc    = Bool()                      // Is a ECall or Breakpoint -- both set EPC to PC.
   val is_rocc          = Bool()
-
+  val is_mov           = Bool()
 
   // Index into FTQ to figure out our fetch PC.
   val ftq_idx          = UInt(log2Ceil(ftqSz).W)
@@ -74,6 +74,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // Was this a branch that was predicted taken?
   val taken            = Bool()
 
+  val imm_rename       = Bool()
   val imm_sel          = UInt(IS_N.getWidth.W)
   val pimm             = UInt(immPregSz.W)
   val imm_packed       = UInt(LONGEST_IMM_SZ.W) // densely pack the imm in decode
@@ -81,9 +82,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val op1_sel          = UInt(OP1_X.getWidth.W)
   val op2_sel          = UInt(OP2_X.getWidth.W)
 
+  val fp_ctrl          = new freechips.rocketchip.tile.FPUCtrlSigs
+
   val rob_idx          = UInt(robAddrSz.W)
-  val ldq_idx          = UInt(ldqAddrSz.W)
-  val stq_idx          = UInt(stqAddrSz.W)
+  val ldq_idx          = UInt((1+ldqAddrSz).W)
+  val stq_idx          = UInt((1+stqAddrSz).W)
   val rxq_idx          = UInt(log2Ceil(numRxqEntries).W)
   val pdst             = UInt(maxPregSz.W)
   val prs1             = UInt(maxPregSz.W)
@@ -131,7 +134,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val frs3_en          = Bool()
 
   val fcn_dw           = Bool()
-  val fcn_op           = UInt((new freechips.rocketchip.rocket.ALUFN()).SZ_ALU_FN.W)
+  val fcn_op           = UInt(freechips.rocketchip.rocket.ALU.SZ_ALU_FN.W)
 
   // floating point information
   val fp_val           = Bool()             // is a floating-point instruction (F- or D-extension)?
