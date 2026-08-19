@@ -125,12 +125,12 @@ class WithNSmallBooms(n: Int = 1) extends Config(
   })
 )
 
-class WithNMediumBoomsLargeFetchBuffer(n: Int = 1, overrideIdOffset: Option[Int] = None) extends Config (
+class WithNMediumBoomsLargeFetchBuffer(n: Int = 1) extends Config (
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
       val prev = up(TilesLocated(InSubsystem), site)
-      val idOffset = overrideIdOffset.getOrElse(prev.size)
+      val idOffset = up(NumTiles)
       (0 until n).map { i =>
         BoomTileAttachParams(
           tileParams = BoomTileParams(
@@ -164,16 +164,16 @@ class WithNMediumBoomsLargeFetchBuffer(n: Int = 1, overrideIdOffset: Option[Int]
         )
       } ++ prev
     }
-    case XLen => 64
+    case NumTiles => up(NumTiles) + n
   })
 )
 
-class WithNMediumBoomsLargeFetchBufferMSHRS(n: Int = 1, overrideIdOffset: Option[Int] = None) extends Config (
+class WithNMediumBoomsLargeFetchBufferMSHRS(n: Int = 1) extends Config (
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
       val prev = up(TilesLocated(InSubsystem), site)
-      val idOffset = overrideIdOffset.getOrElse(prev.size)
+      val idOffset = up(NumTiles)
       (0 until n).map { i =>
         BoomTileAttachParams(
           tileParams = BoomTileParams(
@@ -207,16 +207,16 @@ class WithNMediumBoomsLargeFetchBufferMSHRS(n: Int = 1, overrideIdOffset: Option
         )
       } ++ prev
     }
-    case XLen => 64
+    case NumTiles => up(NumTiles) + n
   })
 )
 
-class WithNMediumBoomsLargeFetchBuffer64(n: Int = 1, overrideIdOffset: Option[Int] = None) extends Config (
+class WithNMediumBoomsLargeFetchBuffer64(n: Int = 1) extends Config (
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
       val prev = up(TilesLocated(InSubsystem), site)
-      val idOffset = overrideIdOffset.getOrElse(prev.size)
+      val idOffset = up(NumTiles)
       (0 until n).map { i =>
         BoomTileAttachParams(
           tileParams = BoomTileParams(
@@ -250,7 +250,7 @@ class WithNMediumBoomsLargeFetchBuffer64(n: Int = 1, overrideIdOffset: Option[In
         )
       } ++ prev
     }
-    case XLen => 64
+    case NumTiles => up(NumTiles) + n
   })
 )
 
